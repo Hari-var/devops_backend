@@ -1,11 +1,11 @@
-from app.db import AsyncSessionLocal, get_db
+from ...db import AsyncSessionLocal, get_db
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException #type: ignore
 from starlette import status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import Approval
+from ...models import Approval
 from typing import Annotated, Optional, Literal
 
 db_dependency = Annotated[AsyncSession, Depends(get_db)]

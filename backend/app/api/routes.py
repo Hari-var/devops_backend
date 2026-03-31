@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import (
+from .v1 import (
     analysis,
     approvals,
     auth,

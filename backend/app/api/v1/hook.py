@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from json import loads
 import json
-from app.api.v1.sql import save_approval, Repo_response
-from app.db import AsyncSessionLocal, get_db
+from .sql import save_approval, Repo_response
+from ...db import AsyncSessionLocal, get_db
 router = APIRouter()
 from typing import Annotated
 db_dependency = Annotated[AsyncSession, Depends(get_db)]

@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.config import get_settings
+from ...config import get_settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

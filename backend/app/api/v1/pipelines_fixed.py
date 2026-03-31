@@ -8,13 +8,13 @@ import base64
 import yaml
 import asyncio
 
-from app.services.pipeline_monitor import (
+from ...services.pipeline_monitor import (
     get_failed_workflow_runs,
     get_workflow_run_logs,
     get_workflow_run_jobs,
     extract_error_from_logs,
 )
-from app.services.ai_analyzer import analyze_pipeline_error
+from ...services.ai_analyzer import analyze_pipeline_error
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -442,8 +442,8 @@ async def get_failed_pipelines(
             # Try to detect tech stack from repo (quick check)
             # In production, you'd query a database where tech stack is stored
             try:
-                from app.api.v1.analysis import tech_detection
-                from app.api.v1.analysis import TechDetectionRequest
+                from .analysis import tech_detection
+                from .analysis import TechDetectionRequest
                 
                 detection_req = TechDetectionRequest(
                     repoFullName=repo_full_name,

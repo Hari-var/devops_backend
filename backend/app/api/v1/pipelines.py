@@ -13,8 +13,8 @@ from nacl import encoding
 from nacl import public as nacl_public
 from pydantic import BaseModel
 
-from app.services.ai_analyzer import analyze_pipeline_error
-from app.services.pipeline_monitor import (
+from ...services.ai_analyzer import analyze_pipeline_error
+from ...services.pipeline_monitor import (
     extract_error_from_logs,
     get_failed_workflow_runs,
     get_workflow_run_jobs,
@@ -626,7 +626,7 @@ async def get_failed_pipelines(
                 "hasHelm": False, "hasTerraform": False,
             }
             try:
-                from app.api.v1.analysis import TechDetectionRequest, tech_detection  # noqa: PLC0415
+                from .analysis import TechDetectionRequest, tech_detection  # noqa: PLC0415
                 detected = await tech_detection(
                     TechDetectionRequest(repoFullName=repo_name, branch=run.get("head_branch", "main")),
                     gh_token,

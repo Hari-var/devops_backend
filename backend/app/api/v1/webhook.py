@@ -23,9 +23,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
-from app.config import get_settings
-from app.db import AsyncSessionLocal
-from app.models import Approval
+from ...config import get_settings
+from ...db import AsyncSessionLocal
+from ...models import Approval
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

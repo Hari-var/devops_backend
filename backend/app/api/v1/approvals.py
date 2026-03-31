@@ -31,8 +31,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import traceback
 
-from app.db import AsyncSessionLocal, get_db
-from app.models import Approval
+from ...db import AsyncSessionLocal, get_db
+from ...models import Approval
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ async def _push_stage_event(approval_id: str, stage: int, severity: str, message
 
 async def start_poller() -> None:
     global _POLLER_ENABLED
-    from app.config import get_settings  # noqa: PLC0415
+    from ...config import get_settings  # noqa: PLC0415
     interval = get_settings().approval_poll_interval
     logger.info("Approval poller started (interval=%ds)", interval)
     while _POLLER_ENABLED:
@@ -598,8 +598,8 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             queue.put_nowait(f"STAGE:{stage}")
 
     try:
-        from app.api.v1.analysis import TechDetectionRequest, tech_detection  # noqa: PLC0415
-        from app.api.v1.pipelines import (  # noqa: PLC0415
+        from .analysis import TechDetectionRequest, tech_detection  # noqa: PLC0415
+        from .pipelines import (  # noqa: PLC0415
             _commit_file, _generate_ci_yaml, _verify_repo_access,
         )
 
@@ -740,7 +740,7 @@ async def _scaffold_missing_files(
     repo: str, branch: str, tech: dict, gh_token: str, log
 ) -> None:
     """Commit minimal required files if they are absent from the repo."""
-    from app.api.v1.pipelines import _commit_file  # noqa: PLC0415
+    from .pipelines import _commit_file  # noqa: PLC0415
 
     language: str = tech.get("language", "").lower()
     # Skip scaffolding for static frontends — they already have package.json + src/
@@ -940,7 +940,7 @@ def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
 async def _push_azure_secrets(
     repo: str, cfg: dict, gh_token: str, actual_app_name: str, resource_group: str = ""
 ) -> None:
-    from app.api.v1.pipelines import _set_github_secret  # noqa: PLC0415
+    from .pipelines import _set_github_secret  # noqa: PLC0415
     import json as _json  # noqa: PLC0415
 
     # Prefer credentials supplied in the committed config.py; fall back to environment variables

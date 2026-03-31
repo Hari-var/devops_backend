@@ -13,7 +13,6 @@ from .api.routes import router as api_router
 from .api.v1.approvals import start_poller
 from .config import get_settings
 from .db import create_tables
-from mangum import Mangum
 
 
 
@@ -81,4 +80,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-handler = Mangum(app)
