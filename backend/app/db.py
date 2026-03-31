@@ -38,7 +38,7 @@ db_dependency = Annotated[Session, Depends(get_db)]
 async def create_tables() -> None:
     """Create all tables on startup (idempotent)."""
     async with engine.begin() as conn:
-        from app import models as _  # noqa: F401 — ensure models are imported before create_all
+        from . import models as _  # noqa: F401 — ensure models are imported before create_all
         await conn.run_sync(Base.metadata.create_all)
         # Ensure new columns added to existing SQLite DB (SQLite doesn't alter tables with create_all)
         from sqlalchemy import text

@@ -9,10 +9,10 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import router as api_router
-from app.api.v1.approvals import start_poller
-from app.config import get_settings
-from app.db import create_tables
+from .api.routes import router as api_router
+from .api.v1.approvals import start_poller
+from .config import get_settings
+from .db import create_tables
 from mangum import Mangum
 
 
