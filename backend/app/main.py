@@ -13,6 +13,9 @@ from app.api.routes import router as api_router
 from app.api.v1.approvals import start_poller
 from app.config import get_settings
 from app.db import create_tables
+from mangum import Mangum
+
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,3 +79,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+handler = Mangum(app)

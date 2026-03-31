@@ -15,3 +15,4 @@ pynacl
 sqlalchemy[asyncio]
 aiosqlite
 asyncpg
+Mangum
