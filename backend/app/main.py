@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routes import router as api_router
-from .api.v1.approvals import start_poller
 from .config import get_settings
 from .db import create_tables
 
@@ -33,10 +32,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: ARG001
         logger.warning("Database initialization failed: %s", e)
     token_preview = (settings.github_pat[:12] + "...") if settings.github_pat else "NOT SET"
     logger.info("GITHUB_PERSONAL_ACCESS_TOKEN loaded: %s", token_preview)
-    poller_task = asyncio.create_task(start_poller()) if os.getenv("ENABLE_POLLER", "true").lower() == "true" else None
+    # poller_task = asyncio.create_task(start_poller()) if os.getenv("ENABLE_POLLER", "true").lower() == "true" else None
     yield
-    if poller_task:
-        poller_task.cancel()
+    # if poller_task:
+    #     poller_task.cancel()
     logger.info("DevOps Agent Platform shutting down")
 
 

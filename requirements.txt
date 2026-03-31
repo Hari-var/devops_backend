@@ -15,4 +15,5 @@ pynacl
 sqlalchemy[asyncio]
 aiosqlite
 asyncpg
+psycopg2-binary
 mangum
