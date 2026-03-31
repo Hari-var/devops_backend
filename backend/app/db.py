@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./devops_agent.db")
+_DATABASE_URL = os.getenv("cdb", "sqlite+aiosqlite:///./devops_agent.db")
 
 _is_sqlite = "sqlite" in _DATABASE_URL
 _connect_args = {"check_same_thread": False} if _is_sqlite else {"ssl": "require"}

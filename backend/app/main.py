@@ -26,10 +26,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: ARG001
-
     settings = get_settings()
-    await create_tables()
-    logger.info("DevOps Agent Platform starting up")
+    try:
+        await create_tables()
+        logger.info("DevOps Agent Platform starting up")
+    except Exception as e:
+        logger.warning("Database initialization failed: %s", e)
     token_preview = (settings.github_pat[:12] + "...") if settings.github_pat else "NOT SET"
     logger.info("GITHUB_PERSONAL_ACCESS_TOKEN loaded: %s", token_preview)
     poller_task = asyncio.create_task(start_poller()) if os.getenv("ENABLE_POLLER", "true").lower() == "true" else None
