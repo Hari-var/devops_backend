@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+httpx
+python-dotenv
+pydantic
+pyyaml
+google-generativeai
+azure-mgmt-resource
+azure-mgmt-web
+azure-mgmt-containerservice
+azure-mgmt-compute
+azure-mgmt-network
+azure-identity
+pynacl
+sqlalchemy[asyncio]
+aiosqlite
+asyncpg
