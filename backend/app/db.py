@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./devops_agent.db")
+_DATABASE_URL = os.getenv("cdb", "sqlite+aiosqlite:///./devops_agent.db")
 
 # Convert postgresql:// to postgresql+asyncpg:// for async support
 if _DATABASE_URL.startswith("postgresql://"):
