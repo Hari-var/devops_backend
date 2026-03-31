@@ -16,7 +16,7 @@ class Approval(Base):
     commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
     commit_message: Mapped[str] = mapped_column(Text, default="")
     committed_by: Mapped[str] = mapped_column(String(255), default="")
-    committed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     changed_files: Mapped[list] = mapped_column(JSON, default=list)
 
     # Config parsed from config.py in the repo
@@ -42,4 +42,4 @@ class Approval(Base):
     deployed_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     actions_run_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[float] = mapped_column(DateTime(timezone=True), nullable=False)
