@@ -38,6 +38,10 @@ async def github_oauth_start(request: Request) -> RedirectResponse:  # noqa: ARG
     client_id, _, callback_url = _get_oauth_config()
     state = secrets.token_urlsafe(32)
 
+    logger.info(f"OAuth Start - state: {state}")
+    logger.info(f"Callback URL: {callback_url}")
+    logger.info(f"Request host: {request.url.hostname}")
+
     params = (
         f"client_id={client_id}"
         f"&redirect_uri={callback_url}"
@@ -53,7 +57,7 @@ async def github_oauth_start(request: Request) -> RedirectResponse:  # noqa: ARG
         samesite="none",
         max_age=300,
     )
-    print (redirect)
+    logger.info("Cookie set: oauth_state with SameSite=none, Secure=True")
     return redirect
 
 
@@ -65,8 +69,13 @@ async def github_oauth_callback(code: str, state: str, request: Request) -> Redi
     Redirects to /approvals on success.
     """
     client_id, client_secret, _ = _get_oauth_config()
-    print (request)
+    
+    # Debug logging
+    logger.info(f"Callback received - state param: {state}")
+    logger.info(f"All cookies: {request.cookies}")
     stored_state = request.cookies.get("oauth_state")
+    logger.info(f"Stored state: {stored_state}")
+    
     if not stored_state or stored_state != state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF attack.")
 
