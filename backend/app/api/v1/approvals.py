@@ -274,7 +274,7 @@ async def _check_repo(repo: str, branch: str, token: str) -> None:
         terraform_url=None,
         deployed_url=None,
         actions_run_url=None,
-        created_at=time.time(),
+        created_at=datetime.now(),
     )
     async with AsyncSessionLocal() as db:
         db.add(approval)

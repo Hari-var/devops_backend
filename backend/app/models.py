@@ -42,4 +42,4 @@ class Approval(Base):
     deployed_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     actions_run_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[float] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
