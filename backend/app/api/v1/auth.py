@@ -105,8 +105,8 @@ async def github_oauth_callback(code: str, state: str, request: Request) -> Redi
         key="gh_token",
         value=access_token,
         httponly=True,
-        secure=_COOKIE_SECURE,
-        samesite="lax",
+        secure=True,
+        samesite="none",
         max_age=3600,
     )
     response.delete_cookie("oauth_state", samesite="none", secure=True)
@@ -114,9 +114,24 @@ async def github_oauth_callback(code: str, state: str, request: Request) -> Redi
 
 
 @router.get("/me", summary="Get current authenticated user")
-async def get_current_user() -> dict[str, str]:
-    """Return the current authenticated user identity (stub — extend with real session lookup)."""
-    return {"username": "demo-user", "provider": "github"}
+async def get_current_user(request: Request) -> dict[str, str]:
+    """Return the current authenticated user identity from gh_token cookie."""
+    gh_token = request.cookies.get("gh_token")
+    if not gh_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # Fetch user info from GitHub
+    async with httpx.AsyncClient(timeout=10) as client:
+        user_res = await client.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {gh_token}"},
+        )
+    
+    if user_res.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    user_data = user_res.json()
+    return {"username": user_data.get("login", "unknown"), "provider": "github"}
 
 
 @router.get("/favicon.ico", include_in_schema=False)
