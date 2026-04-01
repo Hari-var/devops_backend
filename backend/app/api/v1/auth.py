@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +18,9 @@ _GITHUB_SCOPES = "repo workflow read:user"
 
 _COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "").lower() == "true"
 _FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
+# In-memory state store (use Redis in production)
+_oauth_states: dict[str, datetime] = {}
 
 
 def _get_oauth_config() -> tuple[str, str, str]:
@@ -33,14 +37,14 @@ def _get_oauth_config() -> tuple[str, str, str]:
 async def github_oauth_start(request: Request) -> RedirectResponse:  # noqa: ARG001
     """
     Initiate GitHub OAuth flow.
-    Generates a random state token stored in a short-lived HttpOnly cookie to prevent CSRF.
+    Generates a random state token stored server-side to prevent CSRF.
     """
     client_id, _, callback_url = _get_oauth_config()
     state = secrets.token_urlsafe(32)
 
+    # Store state server-side with expiry
+    _oauth_states[state] = datetime.now() + timedelta(minutes=5)
     logger.info(f"OAuth Start - state: {state}")
-    logger.info(f"Callback URL: {callback_url}")
-    logger.info(f"Request host: {request.url.hostname}")
 
     params = (
         f"client_id={client_id}"
@@ -48,17 +52,7 @@ async def github_oauth_start(request: Request) -> RedirectResponse:  # noqa: ARG
         f"&scope={_GITHUB_SCOPES.replace(' ', '%20')}"
         f"&state={state}"
     )
-    redirect = RedirectResponse(f"{_GITHUB_AUTHORIZE_URL}?{params}")
-    redirect.set_cookie(
-        key="oauth_state",
-        value=state,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=300,
-    )
-    logger.info("Cookie set: oauth_state with SameSite=none, Secure=True")
-    return redirect
+    return RedirectResponse(f"{_GITHUB_AUTHORIZE_URL}?{params}")
 
 
 @router.get("/github/callback", summary="GitHub OAuth callback")
@@ -70,14 +64,22 @@ async def github_oauth_callback(code: str, state: str, request: Request) -> Redi
     """
     client_id, client_secret, _ = _get_oauth_config()
     
-    # Debug logging
-    logger.info(f"Callback received - state param: {state}")
-    logger.info(f"All cookies: {request.cookies}")
-    stored_state = request.cookies.get("oauth_state")
-    logger.info(f"Stored state: {stored_state}")
+    logger.info(f"Callback received - state: {state}")
     
-    if not stored_state or stored_state != state:
+    # Validate state from server-side store
+    if state not in _oauth_states:
+        logger.error("State not found in server store")
         raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF attack.")
+    
+    # Check expiry
+    if datetime.now() > _oauth_states[state]:
+        del _oauth_states[state]
+        logger.error("State expired")
+        raise HTTPException(status_code=400, detail="OAuth state expired.")
+    
+    # Remove used state
+    del _oauth_states[state]
+    logger.info("State validated successfully")
 
     async with httpx.AsyncClient(timeout=15) as client:
         token_res = await client.post(
@@ -107,7 +109,7 @@ async def github_oauth_callback(code: str, state: str, request: Request) -> Redi
         samesite="lax",
         max_age=3600,
     )
-    response.delete_cookie("oauth_state")
+    response.delete_cookie("oauth_state", samesite="none", secure=True)
     return response
 
 
