@@ -58,7 +58,7 @@ class Repo_update_response(BaseModel):
     terraform_url: Optional[str | None]
     deployed_url: Optional[str | None]
     actions_run_url: Optional[str | None]
-    created_at: Optional[float]
+    created_at: Optional[datetime]
     
 @router.get("/all_details")
 async def get_all_details(db: db_dependency):
@@ -78,10 +78,10 @@ async def get_repo_details(id: str, db: db_dependency):
     return repo
 
 async def save_approval(repo: Repo_response) -> Approval:
-    import uuid, time  # noqa: PLC0415
+    import uuid  # noqa: PLC0415
     new_repo = Approval(
         id=str(uuid.uuid4()),
-        created_at=time.time(),
+        created_at=datetime.now(),
         detected_tech={},
         pipeline_stage=0,
         stage_logs={},
