@@ -244,6 +244,7 @@ async def _check_repo(repo: str, branch: str, token: str) -> None:
 
     raw_content = await _fetch_file_content(repo, "config.py", commit_sha, token)
     if not raw_content:
+        logger.warning("Poller: could not fetch config.py content from %s", _sanitize(repo))
         return
 
     try:
@@ -332,11 +333,20 @@ async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
     github_ok = False
     github_user = ""
     repos_found: list[str] = []
+    pat_scopes = []
     if token:
         user_data = await _fetch_json(f"{_GITHUB_API}/user", token)
         if isinstance(user_data, dict):
             github_ok = True
             github_user = user_data.get("login", "")
+        
+        # Check PAT scopes
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get(f"{_GITHUB_API}/user", headers=_gh_headers(token))
+            if res.status_code == 200:
+                scopes_header = res.headers.get("x-oauth-scopes", "")
+                pat_scopes = [s.strip() for s in scopes_header.split(",") if s.strip()]
+        
         repos_data = await _fetch_json(
             f"{_GITHUB_API}/user/repos",
             token,
@@ -351,6 +361,7 @@ async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
     return {
         "token_set": bool(token),
         "token_preview": token_preview,
+        "pat_scopes": pat_scopes,
         "github_reachable": github_ok,
         "github_user": github_user,
         "repos_visible": repos_found,
@@ -642,7 +653,24 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await log("Tech detection complete.", 1)
         await _push_stage_event(approval_id, 1, "info", "Tech detection complete")
 
-        resolved_branch = await _verify_repo_access(repo, branch, pat)
+        # Verify repo access - try PAT first, fallback to OAuth token
+        try:
+            resolved_branch = await _verify_repo_access(repo, branch, pat)
+        except HTTPException as e:
+            if e.status_code == 404:
+                await log("PAT cannot access repo, trying OAuth token...", 1)
+                try:
+                    resolved_branch = await _verify_repo_access(repo, branch, gh_token)
+                    await log("Using OAuth token for repo access", 1)
+                    # Use OAuth token for read operations, PAT for write operations
+                    pat = gh_token
+                except HTTPException:
+                    await log("ERROR: Neither PAT nor OAuth token can access this repo", 1)
+                    await log("Please ensure the repo exists and you have access", 1)
+                    raise
+            else:
+                raise
+        
         deploy_cfg = _build_deploy_config(cfg, tech)
         
         # Determine deployment target
