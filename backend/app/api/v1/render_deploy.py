@@ -330,13 +330,20 @@ async def monitor_render_deployment(
                     f"{_RENDER_API}/deploys/{deploy_id}",
                     headers=headers,
                 )
-            await log(f"debub deploy response: {response.json()}")
+            
             if response.status_code != 200:
-                await log(f"  [{attempt + 1:02d}] Failed to fetch deploy status")
+                await log(f"  [{attempt + 1:02d}] Failed to fetch deploy status (HTTP {response.status_code})")
+                await log(f"  Response: {response.text[:200]}")
                 await asyncio.sleep(10)
                 continue
             
-            deploy_data = response.json()
+            try:
+                deploy_data = response.json()
+            except Exception as json_err:
+                await log(f"  [{attempt + 1:02d}] JSON parse error: {json_err}")
+                await log(f"  Response text: {response.text[:200]}")
+                await asyncio.sleep(10)
+                continue
             status = deploy_data.get("status", "unknown")
             
             await log(f"  [{attempt + 1:02d}] Deploy status: {status.upper()}")
