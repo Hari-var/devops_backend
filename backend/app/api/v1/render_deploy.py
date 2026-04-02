@@ -256,15 +256,38 @@ async def create_render_service(
             raise RuntimeError(f"Render API error ({response.status_code}): {error_detail}")
         
         service_data = response.json()
-        service_id = service_data.get("service", {}).get("id", "")
         
-        # Get service URL
+        # Extract service info from response
+        service_info = service_data.get("service", service_data)
+        service_id = service_info.get("id", "")
+        
+        # Get the actual service URL from Render
+        service_url = ""
         if service_type == "static_site":
-            service_url = f"https://{app_name}.onrender.com"
+            # For static sites, get the URL from serviceDetails
+            service_url = service_info.get("serviceDetails", {}).get("url", "")
         else:
-            service_url = service_data.get("service", {}).get("serviceDetails", {}).get("url", "")
-            if not service_url:
-                service_url = f"https://{app_name}.onrender.com"
+            # For web services, get the URL from serviceDetails
+            service_url = service_info.get("serviceDetails", {}).get("url", "")
+        
+        # If URL not in response, fetch it from the service endpoint
+        if not service_url and service_id:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client2:
+                    svc_res = await client2.get(
+                        f"{_RENDER_API}/services/{service_id}",
+                        headers=_get_render_headers(),
+                    )
+                if svc_res.status_code == 200:
+                    svc_data = svc_res.json()
+                    service_url = svc_data.get("service", {}).get("serviceDetails", {}).get("url", "")
+            except Exception:
+                pass
+        
+        # Fallback: construct URL from service name (may not be accurate)
+        if not service_url:
+            service_url = f"https://{app_name}.onrender.com"
+            await log(f"  Warning: Using fallback URL (may not be accurate)")
         
         await log(f"✓ Service created: {service_id}")
         await log(f"✓ Service URL: {service_url}")
@@ -302,47 +325,45 @@ async def monitor_render_deployment(
     
     for attempt in range(max_attempts):
         try:
+            # Check service status directly
             async with httpx.AsyncClient(timeout=15) as client:
-                # Get latest deploy
                 response = await client.get(
-                    f"{_RENDER_API}/services/{service_id}/deploys",
+                    f"{_RENDER_API}/services/{service_id}",
                     headers=headers,
-                    params={"limit": 1},
                 )
             
             if response.status_code != 200:
-                await log(f"  [{attempt + 1:02d}] Failed to fetch deployment status")
+                await log(f"  [{attempt + 1:02d}] Failed to fetch service status")
                 await asyncio.sleep(10)
                 continue
             
-            deploys = response.json()
-            if not deploys:
-                await log(f"  [{attempt + 1:02d}] No deployments found yet...")
-                await asyncio.sleep(10)
-                continue
+            service_data = response.json()
+            service_info = service_data.get("service", service_data)
             
-            latest_deploy = deploys[0]
-            deploy_id = latest_deploy.get("id", "unknown")
-            status = latest_deploy.get("status", "unknown")
+            # Get service status
+            service_status = service_info.get("serviceDetails", {}).get("status", "unknown")
             
-            await log(f"  [{attempt + 1:02d}] Deploy {deploy_id[:8]}: {status.upper()}")
+            await log(f"  [{attempt + 1:02d}] Service status: {service_status.upper()}")
             
-            if status == "live":
+            # Check if service is live
+            if service_status in ("available", "live", "running"):
                 await log("✓ Deployment successful!")
                 return "live"
             
-            if status in ("build_failed", "deploy_failed", "canceled"):
-                await log(f"✗ Deployment failed with status: {status}")
+            # Check for failures
+            if service_status in ("failed", "suspended", "deactivated"):
+                await log(f"✗ Deployment failed with status: {service_status}")
                 return "failed"
             
-            # Still in progress
+            # Still deploying
             await asyncio.sleep(10)
         
         except Exception as exc:
             await log(f"  Error polling deployment: {exc}")
             await asyncio.sleep(10)
     
-    await log("✗ Deployment timeout - check Render dashboard")
+    await log("✗ Deployment timeout - service may still be deploying")
+    await log("  Check Render dashboard for status")
     return "timeout"
 
 
