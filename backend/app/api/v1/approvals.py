@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import base64
+from datetime import datetime
 import logging
 import os
 import time
@@ -656,7 +657,8 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await _scaffold_missing_files(repo, resolved_branch, tech, gh_token, stage3_log)
         await _ensure_gitignore(repo, resolved_branch, gh_token)
 
-        cicd_yaml = _generate_ci_yaml(resolved_branch, tech)
+        # Generate CI/CD YAML with both build and deploy stages
+        cicd_yaml = await _generate_cicd_with_deploy(resolved_branch, tech, cfg)
         await _commit_file(
             repo, resolved_branch,
             ".github/workflows/cicd.yml",
@@ -664,7 +666,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             "chore: add CI/CD pipeline via DevOps Agent",
             gh_token,
         )
-        await log("Committed: .github/workflows/cicd.yml", 3)
+        await log("Committed: .github/workflows/cicd.yml with deploy stage", 3)
 
         app_name = str(cfg.get("APP_NAME", "devops-app"))
         resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
@@ -935,6 +937,74 @@ def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
         "app_type": "static" if is_static else "server",
         "tech": tech or {},
     }
+
+
+async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> str:
+    """Generate CI/CD YAML with both build and deploy stages."""
+    from .pipelines import _build_lang_steps, _build_deploy_steps  # noqa: PLC0415
+    import yaml  # noqa: PLC0415
+    
+    language = tech.get("language", "python")
+    build_tool = tech.get("buildTool", "pip")
+    lang_steps = _build_lang_steps(language, build_tool)
+    
+    # Determine artifact path
+    artifact_paths = {
+        "javascript": "dist/",
+        "typescript": "dist/",
+        "python": "app.zip",
+        "java": "target/*.jar" if build_tool == "maven" else "build/libs/*.jar",
+        "go": "main",
+        "dotnet": "publish/",
+    }
+    artifact_path = artifact_paths.get(language, "dist/")
+    
+    # Build job
+    build_steps = [
+        {"uses": "actions/checkout@v4"},
+        *lang_steps,
+        {
+            "name": "Upload artifact",
+            "uses": "actions/upload-artifact@v4",
+            "with": {"name": "build-artifact", "path": artifact_path, "retention-days": 7},
+        },
+    ]
+    
+    # Create deploy config
+    deploy_config = {
+        "infrastructure_type": "azure-web-app",
+        "resource_name": config.get("APP_NAME", "devops-app"),
+        "resource_group": config.get("RESOURCE_GROUP", "devops-rg"),
+        "sku": config.get("APP_SERVICE_SKU", "B1"),
+        "app_type": "server",
+        "tech": tech,
+    }
+    
+    # Get deploy steps
+    deploy_steps = _build_deploy_steps(deploy_config)
+    
+    # Create complete workflow
+    workflow = {
+        "name": "CI/CD Pipeline",
+        "on": {
+            "push": {"branches": [branch]},
+            "pull_request": {"branches": [branch]},
+        },
+        "jobs": {
+            "build": {
+                "runs-on": "ubuntu-latest",
+                "steps": build_steps,
+            },
+            "deploy": {
+                "runs-on": "ubuntu-latest",
+                "needs": "build",
+                "if": f"github.ref == 'refs/heads/{branch}' && needs.build.result == 'success'",
+                "steps": deploy_steps,
+            },
+        },
+    }
+    
+    return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
 async def _push_azure_secrets(
