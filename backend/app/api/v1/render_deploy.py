@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Callable
+from typing import Awaitable, Callable
 
 import httpx
 
@@ -136,7 +136,7 @@ async def create_render_service(
     branch: str,
     tech: dict,
     cfg: dict,
-    log: Callable[[str], None],
+    log: Callable[[str], Awaitable[None]],
 ) -> tuple[str, str]:
     """
     Create a new Render service via API.
@@ -257,37 +257,29 @@ async def create_render_service(
         
         service_data = response.json()
         
-        # Extract service info from response
-        service_info = service_data.get("service", service_data)
-        service_id = service_info.get("id", "")
+        service_id = service_data.get("id", "")
         
-        # Get the actual service URL from Render
-        service_url = ""
-        if service_type == "static_site":
-            # For static sites, get the URL from serviceDetails
-            service_url = service_info.get("serviceDetails", {}).get("url", "")
-        else:
-            # For web services, get the URL from serviceDetails
-            service_url = service_info.get("serviceDetails", {}).get("url", "")
+        if not service_id:
+            raise RuntimeError("Service created but no ID returned from Render API")
         
-        # If URL not in response, fetch it from the service endpoint
-        if not service_url and service_id:
-            try:
-                async with httpx.AsyncClient(timeout=15) as client2:
-                    svc_res = await client2.get(
-                        f"{_RENDER_API}/services/{service_id}",
-                        headers=_get_render_headers(),
-                    )
-                if svc_res.status_code == 200:
-                    svc_data = svc_res.json()
-                    service_url = svc_data.get("service", {}).get("serviceDetails", {}).get("url", "")
-            except Exception:
-                pass
+        service_url = (service_data.get("serviceDetails") or {}).get("url", "")
         
-        # Fallback: construct URL from service name (may not be accurate)
         if not service_url:
-            service_url = f"https://{app_name}.onrender.com"
-            await log(f"  Warning: Using fallback URL (may not be accurate)")
+            await log("  Service URL not immediately available, fetching from API...")
+            await asyncio.sleep(3)
+            
+            async with httpx.AsyncClient(timeout=15) as client2:
+                svc_res = await client2.get(
+                    f"{_RENDER_API}/services/{service_id}",
+                    headers=_get_render_headers(),
+                )
+            
+            if svc_res.status_code == 200:
+                svc_data = svc_res.json()
+                service_url = svc_data.get("serviceDetails", {}).get("url", "")
+            
+            if not service_url:
+                raise RuntimeError("Service created but URL not available. Check Render dashboard.")
         
         await log(f"✓ Service created: {service_id}")
         await log(f"✓ Service URL: {service_url}")
@@ -304,7 +296,7 @@ async def create_render_service(
 
 async def monitor_render_deployment(
     service_id: str,
-    log: Callable[[str], None],
+    log: Callable[[str], Awaitable[None]],
     timeout_minutes: int = 15,
 ) -> str:
     """
@@ -325,7 +317,6 @@ async def monitor_render_deployment(
     
     for attempt in range(max_attempts):
         try:
-            # Check service status directly
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.get(
                     f"{_RENDER_API}/services/{service_id}",
@@ -337,25 +328,29 @@ async def monitor_render_deployment(
                 await asyncio.sleep(10)
                 continue
             
-            service_data = response.json()
-            service_info = service_data.get("service", service_data)
+            data = response.json()
             
-            # Get service status
-            service_status = service_info.get("serviceDetails", {}).get("status", "unknown")
+            # Extract status from correct location in response
+            service_status = data.get("suspended", "")
+            if service_status == "suspended":
+                await log(f"✗ Service is suspended")
+                return "failed"
             
-            await log(f"  [{attempt + 1:02d}] Service status: {service_status.upper()}")
+            # Check service state
+            service_state = data.get("serviceDetails", {}).get("state", "unknown")
             
-            # Check if service is live
-            if service_status in ("available", "live", "running"):
+            await log(f"  [{attempt + 1:02d}] Service state: {service_state.upper()}")
+            
+            # Success states
+            if service_state in ("available", "live"):
                 await log("✓ Deployment successful!")
                 return "live"
             
-            # Check for failures
-            if service_status in ("failed", "suspended", "deactivated"):
-                await log(f"✗ Deployment failed with status: {service_status}")
+            # Failure states
+            if service_state in ("failed", "deactivated"):
+                await log(f"✗ Deployment failed with state: {service_state}")
                 return "failed"
             
-            # Still deploying
             await asyncio.sleep(10)
         
         except Exception as exc:
@@ -369,7 +364,7 @@ async def monitor_render_deployment(
 
 async def get_render_service_logs(
     service_id: str,
-    log: Callable[[str], None],
+    log: Callable[[str], Awaitable[None]],
     tail: int = 100,
 ) -> None:
     """
@@ -406,7 +401,7 @@ async def get_render_service_logs(
 
 async def delete_render_service(
     service_id: str,
-    log: Callable[[str], None],
+    log: Callable[[str], Awaitable[None]],
 ) -> bool:
     """
     Delete a Render service (useful for cleanup/rollback).
