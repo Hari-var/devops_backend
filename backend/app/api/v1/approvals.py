@@ -601,7 +601,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
     try:
         from .analysis import TechDetectionRequest, tech_detection  # noqa: PLC0415
         from .pipelines import (  # noqa: PLC0415
-            _commit_file, _verify_repo_access, _build_lang_steps,
+            _commit_file, _generate_ci_yaml, _verify_repo_access,
         )
 
         # ── STAGE 1: Tech Detection ─────────────────────────────────────────
@@ -630,89 +630,65 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await _push_stage_event(approval_id, 1, "info", "Tech detection complete")
 
         resolved_branch = await _verify_repo_access(repo, branch, gh_token)
+        deploy_cfg = _build_deploy_config(cfg, tech)
 
-        # ── STAGE 2: Build Application (CI Only) ────────────────────────────
+        # ── STAGE 2: Terraform Provision ────────────────────────────────────
         await _set_stage(2)
-        await log("Creating build pipeline (CI)...", 2)
-        
-        # Generate CI-only YAML (build + artifact upload)
-        ci_yaml = await _generate_ci_only_yaml(resolved_branch, tech)
-        await _commit_file(
-            repo, resolved_branch,
-            ".github/workflows/build.yml",
-            ci_yaml,
-            "chore: add build pipeline via DevOps Agent",
-            gh_token,
-        )
-        await log("Committed: .github/workflows/build.yml", 2)
-        
-        # Wait for build to complete
-        await log("Waiting for build to start...", 2)
-        build_run_url = await _trigger_and_poll_build(repo, resolved_branch, gh_token, lambda m: log(m, 2))
-        await log(f"Build completed successfully: {build_run_url}", 2)
-        await log("Stage 2: Build complete.", 2)
-
-        # ── STAGE 3: Provision Infrastructure (Terraform) ───────────────────
-        await _set_stage(3)
-        await log("Starting infrastructure provisioning...", 3)
-        await log(f"Deploy target  : {cfg.get('DEPLOY_TARGET', 'app_service')}", 3)
-        await log(f"App name       : {cfg.get('APP_NAME', 'devops-app')}", 3)
-        await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 3)
-        await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
-        
-        deployed_url = await _run_terraform(cfg, lambda m: log(m, 3))
-        
+        await log("Starting infrastructure provisioning...", 2)
+        await log(f"Deploy target  : {cfg.get('DEPLOY_TARGET', 'app_service')}", 2)
+        await log(f"App name       : {cfg.get('APP_NAME', 'devops-app')}", 2)
+        await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 2)
+        await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 2)
+        deployed_url = await _run_terraform(cfg, lambda m: log(m, 2))
         async with AsyncSessionLocal() as db:
             r = await db.execute(select(Approval).where(Approval.id == approval_id))
             rec = r.scalar_one_or_none()
             if rec:
                 rec.terraform_url = deployed_url
                 await db.commit()
-        
-        await log(f"Provisioned URL: {deployed_url}", 3)
-        await log("Infrastructure provisioning complete.", 3)
-        await _push_stage_event(approval_id, 3, "info", "Infrastructure provisioning complete")
+        await log(f"Provisioned URL: {deployed_url}", 2)
+        await log("Infrastructure provisioning complete.", 2)
+        await _push_stage_event(approval_id, 2, "info", "Infrastructure provisioning complete")
 
-        # ── STAGE 4: Deploy Application (CD) ────────────────────────────────
-        await _set_stage(4)
-        await log("Creating deployment pipeline (CD)...", 4)
-        
-        # Generate CD-only YAML (download artifact + deploy)
-        app_name = str(cfg.get("APP_NAME", "devops-app"))
-        resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
-        
-        # Push Azure secrets
-        await _push_azure_secrets(repo, cfg, gh_token, app_name, resource_group)
-        await log("Azure secrets configured.", 4)
-        
-        # Generate deploy YAML
-        cd_yaml = await _generate_cd_only_yaml(resolved_branch, tech, cfg)
+        # ── STAGE 3: CI/CD Pipeline Generation ─────────────────────────────
+        await _set_stage(3)
+        await log("Generating CI/CD pipeline YAML...", 3)
+        stage3_log = lambda m: log(m, 3)  # noqa: E731
+        await _scaffold_missing_files(repo, resolved_branch, tech, gh_token, stage3_log)
+        await _ensure_gitignore(repo, resolved_branch, gh_token)
+
+        # Generate CI/CD YAML with both build and deploy stages
+        cicd_yaml = await _generate_cicd_with_deploy(resolved_branch, tech, cfg)
         await _commit_file(
             repo, resolved_branch,
-            ".github/workflows/deploy.yml",
-            cd_yaml,
-            "chore: add deployment pipeline via DevOps Agent",
+            ".github/workflows/cicd.yml",
+            cicd_yaml,
+            "chore: add CI/CD pipeline via DevOps Agent",
             gh_token,
         )
-        await log("Committed: .github/workflows/deploy.yml", 4)
-        
-        # Wait for deployment to complete
-        await log("Waiting for deployment to start...", 4)
-        deploy_run_url = await _trigger_and_poll_deploy(repo, resolved_branch, gh_token, lambda m: log(m, 4))
-        await log(f"Deployment completed: {deploy_run_url}", 4)
-        await log("Stage 4: Deployment complete.", 4)
+        await log("Committed: .github/workflows/cicd.yml with deploy stage", 3)
+
+        app_name = str(cfg.get("APP_NAME", "devops-app"))
+        resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
+        await _push_azure_secrets(repo, cfg, gh_token, app_name, resource_group)
+        await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 3)
+        await log("CI/CD pipeline generation complete.", 3)
+
+        # ── STAGE 4: Monitor GitHub Actions ─────────────────────────────────
+        await _set_stage(4)
+        await log("Waiting for GitHub Actions workflow to start...", 4)
+        run_url = await _trigger_and_poll(repo, resolved_branch, gh_token,
+                                          lambda m: log(m, 4))
+        await log("GitHub Actions workflow complete.", 4)
 
         # ── DONE ─────────────────────────────────────────────────────────────
         await _set_stage(5, status="done",
                          deployed_url=deployed_url,
-                         actions_run_url=deploy_run_url or None)
+                         actions_run_url=run_url or None)
         await log(f"PIPELINE COMPLETE", 0)
-        await log(f"Application URL: {deployed_url}", 0)
-        await log(f"Click to open: {deployed_url}", 0)
-        if build_run_url:
-            await log(f"Build Run: {build_run_url}", 0)
-        if deploy_run_url:
-            await log(f"Deploy Run: {deploy_run_url}", 0)
+        await log(f"Deployed URL : {deployed_url}", 0)
+        if run_url:
+            await log(f"Actions Run  : {run_url}", 0)
         for queue in _SUBSCRIBERS.get(approval_id, []):
             queue.put_nowait("DONE")
 
@@ -995,15 +971,11 @@ async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> s
     ]
     
     # Create deploy config
-    deploy_target = str(config.get("DEPLOY_TARGET", "app_service")).lower()
-    target_map = {"azure_vm": "vm", "vm": "vm", "aks": "aks", "app_service": "azure-web-app", "azure_web_app": "azure-web-app", "web_app": "azure-web-app"}
     deploy_config = {
-        "infrastructure_type": target_map.get(deploy_target, "azure-web-app"),
+        "infrastructure_type": "azure-web-app",
         "resource_name": config.get("APP_NAME", "devops-app"),
         "resource_group": config.get("RESOURCE_GROUP", "devops-rg"),
         "sku": config.get("APP_SERVICE_SKU", "B1"),
-        "public_ip": config.get("PUBLIC_IP", ""),
-        "admin_user": config.get("ADMIN_USER", "azureuser"),
         "app_type": "server",
         "tech": tech,
     }
@@ -1027,78 +999,6 @@ async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> s
                 "runs-on": "ubuntu-latest",
                 "needs": "build",
                 "if": f"github.ref == 'refs/heads/{branch}' && needs.build.result == 'success'",
-                "steps": deploy_steps,
-            },
-        },
-    }
-    
-    return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
-
-
-async def _generate_ci_only_yaml(branch: str, tech: dict) -> str:
-    """Generate CI-only YAML (build + upload artifact)."""
-    from .pipelines import _build_lang_steps  # noqa: PLC0415
-    import yaml  # noqa: PLC0415
-    
-    language = tech.get("language", "python")
-    build_tool = tech.get("buildTool", "pip")
-    lang_steps = _build_lang_steps(language, build_tool)
-    
-    artifact_paths = {
-        "javascript": "dist/",
-        "typescript": "dist/",
-        "python": "app.zip",
-        "java": "target/*.jar" if build_tool == "maven" else "build/libs/*.jar",
-        "go": "main",
-        "dotnet": "publish/",
-    }
-    artifact_path = artifact_paths.get(language, "dist/")
-    
-    workflow = {
-        "name": "Build",
-        "on": {"push": {"branches": [branch]}},
-        "jobs": {
-            "build": {
-                "runs-on": "ubuntu-latest",
-                "steps": [
-                    {"uses": "actions/checkout@v4"},
-                    *lang_steps,
-                    {
-                        "name": "Upload artifact",
-                        "uses": "actions/upload-artifact@v4",
-                        "with": {"name": "build-artifact", "path": artifact_path, "retention-days": 7},
-                    },
-                ],
-            },
-        },
-    }
-    
-    return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
-
-
-async def _generate_cd_only_yaml(branch: str, tech: dict, config: dict) -> str:
-    """Generate CD-only YAML (download artifact + deploy to provisioned infra)."""
-    from .pipelines import _build_deploy_steps  # noqa: PLC0415
-    import yaml  # noqa: PLC0415
-    
-    # Create deploy config based on config.py
-    deploy_config = {
-        "infrastructure_type": "azure-web-app",
-        "resource_name": config.get("APP_NAME", "devops-app"),
-        "resource_group": config.get("RESOURCE_GROUP", "devops-rg"),
-        "sku": config.get("APP_SERVICE_SKU", "B1"),
-        "app_type": "server",
-        "tech": tech,
-    }
-    
-    deploy_steps = _build_deploy_steps(deploy_config)
-    
-    workflow = {
-        "name": "Deploy",
-        "on": {"workflow_dispatch": {}},  # Manual trigger
-        "jobs": {
-            "deploy": {
-                "runs-on": "ubuntu-latest",
                 "steps": deploy_steps,
             },
         },
@@ -1269,103 +1169,6 @@ async def _trigger_and_poll(repo: str, branch: str, gh_token: str, log) -> str:
         await asyncio.sleep(10)
 
     return run_url
-
-
-async def _trigger_and_poll_build(repo: str, branch: str, gh_token: str, log) -> str:
-    """Monitor build workflow specifically."""
-    import time as _time  # noqa: PLC0415
-    headers = _gh_headers(gh_token)
-    started_at = _time.time()
-
-    await asyncio.sleep(10)
-
-    for attempt in range(36):
-        async with httpx.AsyncClient(timeout=15) as client:
-            runs_res = await client.get(
-                f"{_GITHUB_API}/repos/{repo}/actions/runs",
-                headers=headers,
-                params={"branch": branch, "per_page": 5},
-            )
-        if runs_res.status_code == 200:
-            runs = runs_res.json().get("workflow_runs", [])
-            run = next(
-                (r for r in runs if r.get("name") == "Build" and _iso_to_ts(r.get("created_at", "")) >= started_at - 30),
-                None,
-            )
-            if run:
-                status = run.get("status", "")
-                conclusion = run.get("conclusion") or ""
-                run_url = run.get("html_url", "")
-                
-                await log(f"Build status: {status.upper()}{' / ' + conclusion.upper() if conclusion else ''}")
-                
-                if status == "completed":
-                    if conclusion == "success":
-                        await log("Build completed successfully!")
-                        return run_url
-                    else:
-                        raise RuntimeError(f"Build failed with conclusion: {conclusion}")
-                
-                await asyncio.sleep(10)
-            else:
-                await log(f"Waiting for build workflow... (attempt {attempt + 1})")
-                await asyncio.sleep(10)
-    
-    raise RuntimeError("Build workflow did not start within expected time")
-
-
-async def _trigger_and_poll_deploy(repo: str, branch: str, gh_token: str, log) -> str:
-    """Trigger and monitor deploy workflow."""
-    import time as _time  # noqa: PLC0415
-    headers = _gh_headers(gh_token)
-    
-    # Trigger deploy workflow manually
-    async with httpx.AsyncClient(timeout=15) as client:
-        trigger_res = await client.post(
-            f"{_GITHUB_API}/repos/{repo}/actions/workflows/deploy.yml/dispatches",
-            headers=headers,
-            json={"ref": branch},
-        )
-    
-    if trigger_res.status_code not in (200, 204):
-        await log(f"Warning: Could not trigger deploy workflow: {trigger_res.status_code}")
-    
-    started_at = _time.time()
-    await asyncio.sleep(10)
-
-    for attempt in range(36):
-        async with httpx.AsyncClient(timeout=15) as client:
-            runs_res = await client.get(
-                f"{_GITHUB_API}/repos/{repo}/actions/runs",
-                headers=headers,
-                params={"per_page": 5},
-            )
-        if runs_res.status_code == 200:
-            runs = runs_res.json().get("workflow_runs", [])
-            run = next(
-                (r for r in runs if r.get("name") == "Deploy" and _iso_to_ts(r.get("created_at", "")) >= started_at - 30),
-                None,
-            )
-            if run:
-                status = run.get("status", "")
-                conclusion = run.get("conclusion") or ""
-                run_url = run.get("html_url", "")
-                
-                await log(f"Deploy status: {status.upper()}{' / ' + conclusion.upper() if conclusion else ''}")
-                
-                if status == "completed":
-                    if conclusion == "success":
-                        await log("Deployment completed successfully!")
-                        return run_url
-                    else:
-                        raise RuntimeError(f"Deployment failed with conclusion: {conclusion}")
-                
-                await asyncio.sleep(10)
-            else:
-                await log(f"Waiting for deploy workflow... (attempt {attempt + 1})")
-                await asyncio.sleep(10)
-    
-    raise RuntimeError("Deploy workflow did not complete within expected time")
 
 
 def _iso_to_ts(iso: str) -> float:
