@@ -971,11 +971,15 @@ async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> s
     ]
     
     # Create deploy config
+    deploy_target = str(config.get("DEPLOY_TARGET", "app_service")).lower()
+    target_map = {"azure_vm": "vm", "vm": "vm", "aks": "aks", "app_service": "azure-web-app", "azure_web_app": "azure-web-app", "web_app": "azure-web-app"}
     deploy_config = {
-        "infrastructure_type": "azure-web-app",
+        "infrastructure_type": target_map.get(deploy_target, "azure-web-app"),
         "resource_name": config.get("APP_NAME", "devops-app"),
         "resource_group": config.get("RESOURCE_GROUP", "devops-rg"),
         "sku": config.get("APP_SERVICE_SKU", "B1"),
+        "public_ip": config.get("PUBLIC_IP", ""),
+        "admin_user": config.get("ADMIN_USER", "azureuser"),
         "app_type": "server",
         "tech": tech,
     }
