@@ -691,7 +691,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             await log(f"Region: {cfg.get('REGION', 'oregon')}", 2)
             await log(f"Plan: {cfg.get('PLAN', 'free')}", 2)
             
-            deployed_url, service_id = await create_render_service(
+            deployed_url, service_id, deploy_id = await create_render_service(
                 repo=repo,
                 branch=resolved_branch,
                 tech=tech,
@@ -765,7 +765,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             
             await log("Monitoring Render deployment...", 4)
             status = await monitor_render_deployment(
-                service_id=service_id,
+                deploy_id=deploy_id,
                 log=lambda m: log(m, 4),
                 timeout_minutes=15,
             )

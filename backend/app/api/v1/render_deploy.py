@@ -137,7 +137,7 @@ async def create_render_service(
     tech: dict,
     cfg: dict,
     log: Callable[[str], Awaitable[None]],
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """
     Create a new Render service via API.
     
@@ -149,7 +149,7 @@ async def create_render_service(
         log: Logging function
     
     Returns:
-        Tuple of (service_url, service_id)
+        Tuple of (service_url, service_id, deploy_id)
     """
     await log("Creating Render service...")
     
@@ -259,11 +259,15 @@ async def create_render_service(
         
         service_data = response.json()
         service = service_data.get("service", service_data)
+        deploy_id = service_data.get("deployId", "")
 
         service_id = service.get("id", "")
 
         if not service_id:
             raise RuntimeError("Service created but no ID returned from Render API")
+        
+        if not deploy_id:
+            raise RuntimeError("Service created but no deploy ID returned from Render API")
 
         service_url = (service.get("serviceDetails") or {}).get("url", "")
         
@@ -285,9 +289,10 @@ async def create_render_service(
                 raise RuntimeError("Service created but URL not available. Check Render dashboard.")
         
         await log(f"✓ Service created: {service_id}")
+        await log(f"✓ Deploy ID: {deploy_id}")
         await log(f"✓ Service URL: {service_url}")
         
-        return service_url, service_id
+        return service_url, service_id, deploy_id
     
     except httpx.HTTPError as exc:
         await log(f"✗ HTTP error creating service: {exc}")
@@ -298,7 +303,7 @@ async def create_render_service(
 
 
 async def monitor_render_deployment(
-    service_id: str,
+    deploy_id: str,
     log: Callable[[str], Awaitable[None]],
     timeout_minutes: int = 15,
 ) -> str:
@@ -306,7 +311,7 @@ async def monitor_render_deployment(
     Monitor Render deployment status until completion.
     
     Args:
-        service_id: Render service ID
+        deploy_id: Render deploy ID
         log: Logging function
         timeout_minutes: Max time to wait for deployment
     
@@ -316,46 +321,34 @@ async def monitor_render_deployment(
     await log("Monitoring Render deployment...")
     
     headers = _get_render_headers()
-    max_attempts = timeout_minutes * 6  # Poll every 10 seconds
+    max_attempts = timeout_minutes * 6
     
     for attempt in range(max_attempts):
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.get(
-                    f"{_RENDER_API}/services/{service_id}",
+                    f"{_RENDER_API}/deploys/{deploy_id}",
                     headers=headers,
                 )
-            
+            await log(f"debub deploy response: {response.json()}")
             if response.status_code != 200:
-                await log(f"  [{attempt + 1:02d}] Failed to fetch service status")
+                await log(f"  [{attempt + 1:02d}] Failed to fetch deploy status")
                 await asyncio.sleep(10)
                 continue
             
-            data = response.json()
+            deploy_data = response.json()
+            status = deploy_data.get("status", "unknown")
             
-            suspended = data.get("suspended", "")
-            if suspended == "suspended":
-                await log("✗ Service is suspended")
+            await log(f"  [{attempt + 1:02d}] Deploy status: {status.upper()}")
+            
+            if status == "live":
+                await log("✓ Deployment successful!")
+                return "live"
+            
+            if status in ("build_failed", "deploy_failed", "canceled"):
+                await log(f"✗ Deployment failed with status: {status}")
                 return "failed"
             
-            # For static sites, check if deploy exists and is complete
-            service_type = data.get("type", "")
-            
-            if service_type == "static_site":
-                # Static sites deploy immediately, just verify it's not suspended
-                if suspended == "not_suspended":
-                    await log(f"  [{attempt + 1:02d}] Static site active")
-                    await log("✓ Deployment successful!")
-                    return "live"
-            else:
-                # For web services, we'd check deploy status here
-                # Since we don't have that endpoint, assume success if not suspended
-                if suspended == "not_suspended":
-                    await log(f"  [{attempt + 1:02d}] Service active")
-                    await log("✓ Deployment successful!")
-                    return "live"
-            
-            await log(f"  [{attempt + 1:02d}] Waiting for deployment...")
             await asyncio.sleep(10)
         
         except Exception as exc:
