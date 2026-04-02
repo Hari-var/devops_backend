@@ -329,7 +329,7 @@ async def monitor_render_deployment(
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.get(
-                    f"{_RENDER_API}/services/{service_id}/deploys",
+                    f"{_RENDER_API}/services/{s_id}/deploys?limit=1",
                     headers=headers,
                 )
             
@@ -351,12 +351,8 @@ async def monitor_render_deployment(
             
             # Find the specific deploy by ID
             deploy = None
-            if isinstance(deploys_data, list):
-                deploy = next((d for d in deploys_data if d.get("id") == deploy_id), None)
-                if not deploy and deploys_data:
-                    deploy = deploys_data[0]
-            elif isinstance(deploys_data, dict):
-                deploy = deploys_data
+            if isinstance(deploys_data, list) and deploys_data:
+                deploy = deploys_data[0].get("deploy")
             
             if not deploy:
                 await log(f"  [{attempt + 1:02d}] Deploy not found")
