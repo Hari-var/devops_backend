@@ -245,6 +245,8 @@ async def create_render_service(
                 headers=_get_render_headers(),
                 json=payload,
             )
+        await log(f"DEBUG RESPONSE: {response.text}")
+        print("DEBUG RESPONSE:", response.json())
         
         if response.status_code not in (200, 201):
             error_detail = response.text
@@ -256,13 +258,14 @@ async def create_render_service(
             raise RuntimeError(f"Render API error ({response.status_code}): {error_detail}")
         
         service_data = response.json()
-        
-        service_id = service_data.get("id", "")
-        
+        service = service_data.get("service", service_data)
+
+        service_id = service.get("id", "")
+
         if not service_id:
             raise RuntimeError("Service created but no ID returned from Render API")
-        
-        service_url = (service_data.get("serviceDetails") or {}).get("url", "")
+
+        service_url = (service.get("serviceDetails") or {}).get("url", "")
         
         if not service_url:
             await log("  Service URL not immediately available, fetching from API...")
