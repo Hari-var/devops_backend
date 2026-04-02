@@ -141,8 +141,9 @@ def _build_lang_steps(language: str, build_tool: str) -> list[dict]:
             ]
         return [
             {"uses": "actions/setup-python@v5", "with": {"python-version": "3.11"}},
-            {"name": "Install dependencies", "run": "pip install -r requirements.txt"},
-            {"name": "Package app", "run": "zip -r app.zip . -x '*.git*' '__pycache__/*' '*.pyc'"},
+            {"name": "Install dependencies", "run": "pip install -r requirements.txt || echo 'No requirements.txt'"},
+            {"name": "Package app", "run": "zip -r app.zip . -x '*.git*' '__pycache__/*' '*.pyc' 'venv/*' '.venv/*'"},
+            {"name": "Verify artifact", "run": "ls -lh app.zip"},
         ]
 
     if language == "javascript":
@@ -252,6 +253,7 @@ def _build_deploy_steps(deploy: dict) -> list[dict]:
         steps: list[dict] = [
             {"name": "Download artifact", "uses": "actions/download-artifact@v4",
              "with": {"name": "build-artifact", "path": dl_path}},
+            {"name": "Verify download", "run": f"ls -lah {dl_path}"},
         ]
         if is_static:
             steps.append({"name": "Inject serve package.json", "run": static_inject})

@@ -578,6 +578,19 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         repo: str = record.repo
         branch: str = record.branch
         cfg: dict = dict(record.config)
+    
+    # Use PAT for write operations instead of OAuth token
+    pat = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+    if not pat:
+        await _push_log(approval_id, "ERROR: GITHUB_PERSONAL_ACCESS_TOKEN not set", 0)
+        async with AsyncSessionLocal() as db:
+            r = await db.execute(select(Approval).where(Approval.id == approval_id))
+            rec = r.scalar_one_or_none()
+            if rec:
+                rec.status = "failed"
+                await db.commit()
+        return
+    
     logger.info("Pipeline run started for %s — repo=%s branch=%s", approval_id, _sanitize(repo), branch)
 
     async def log(msg: str, stage: int = 0) -> None:
@@ -629,7 +642,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await log("Tech detection complete.", 1)
         await _push_stage_event(approval_id, 1, "info", "Tech detection complete")
 
-        resolved_branch = await _verify_repo_access(repo, branch, gh_token)
+        resolved_branch = await _verify_repo_access(repo, branch, pat)
         deploy_cfg = _build_deploy_config(cfg, tech)
 
         # ── STAGE 2: Terraform Provision ────────────────────────────────────
@@ -654,8 +667,8 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await _set_stage(3)
         await log("Generating CI/CD pipeline YAML...", 3)
         stage3_log = lambda m: log(m, 3)  # noqa: E731
-        await _scaffold_missing_files(repo, resolved_branch, tech, gh_token, stage3_log)
-        await _ensure_gitignore(repo, resolved_branch, gh_token)
+        await _scaffold_missing_files(repo, resolved_branch, tech, pat, stage3_log)
+        await _ensure_gitignore(repo, resolved_branch, pat)
 
         # Generate CI/CD YAML with both build and deploy stages
         cicd_yaml = await _generate_cicd_with_deploy(resolved_branch, tech, cfg)
@@ -664,20 +677,20 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             ".github/workflows/cicd.yml",
             cicd_yaml,
             "chore: add CI/CD pipeline via DevOps Agent",
-            gh_token,
+            pat,
         )
         await log("Committed: .github/workflows/cicd.yml with deploy stage", 3)
 
         app_name = str(cfg.get("APP_NAME", "devops-app"))
         resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
-        await _push_azure_secrets(repo, cfg, gh_token, app_name, resource_group)
+        await _push_azure_secrets(repo, cfg, pat, app_name, resource_group)
         await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 3)
         await log("CI/CD pipeline generation complete.", 3)
 
         # ── STAGE 4: Monitor GitHub Actions ─────────────────────────────────
         await _set_stage(4)
         await log("Waiting for GitHub Actions workflow to start...", 4)
-        run_url = await _trigger_and_poll(repo, resolved_branch, gh_token,
+        run_url = await _trigger_and_poll(repo, resolved_branch, pat,
                                           lambda m: log(m, 4))
         await log("GitHub Actions workflow complete.", 4)
 
