@@ -1,6 +1,6 @@
 from ...db import AsyncSessionLocal, get_db
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException #type: ignore
+from fastapi import APIRouter, Depends, HTTPException, Cookie #type: ignore
 from fastapi.responses import StreamingResponse
 from starlette import status
 from pydantic import BaseModel
