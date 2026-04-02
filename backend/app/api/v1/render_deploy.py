@@ -153,6 +153,31 @@ async def create_render_service(
     """
     await log("Creating Render service...")
     
+    # Get owner ID first
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            owner_res = await client.get(
+                f"{_RENDER_API}/owners",
+                headers=_get_render_headers(),
+            )
+        
+        if owner_res.status_code != 200:
+            raise RuntimeError(f"Failed to fetch Render owner: {owner_res.text}")
+        
+        owners = owner_res.json()
+        if not owners:
+            raise RuntimeError("No Render owners found. Please create a team/account on Render.")
+        
+        owner_id = owners[0].get("owner", {}).get("id")
+        if not owner_id:
+            raise RuntimeError("Could not extract owner ID from Render API response")
+        
+        await log(f"  Using Render owner ID: {owner_id}")
+    
+    except httpx.HTTPError as exc:
+        await log(f"✗ HTTP error fetching owner: {exc}")
+        raise
+    
     app_name = str(cfg.get("APP_NAME", "devops-app"))
     region = str(cfg.get("REGION", "oregon"))
     plan = str(cfg.get("PLAN", "free"))
@@ -167,6 +192,7 @@ async def create_render_service(
     payload: dict = {
         "type": service_type,
         "name": app_name,
+        "ownerId": owner_id,
         "repo": f"https://github.com/{repo}",
         "branch": branch,
         "autoDeploy": "yes",
