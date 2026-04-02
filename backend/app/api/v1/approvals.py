@@ -765,7 +765,8 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             
             await log("Monitoring Render deployment...", 4)
             status = await monitor_render_deployment(
-                deploy_id=deploy_id,
+                d_id=deploy_id,
+                s_id=service_id,
                 log=lambda m: log(m, 4),
                 timeout_minutes=15,
             )

@@ -303,7 +303,8 @@ async def create_render_service(
 
 
 async def monitor_render_deployment(
-    deploy_id: str,
+    d_id: str,
+    s_id: str,
     log: Callable[[str], Awaitable[None]],
     timeout_minutes: int = 15,
 ) -> str:
@@ -312,6 +313,7 @@ async def monitor_render_deployment(
     
     Args:
         deploy_id: Render deploy ID
+        service_id: Render service ID
         log: Logging function
         timeout_minutes: Max time to wait for deployment
     
@@ -327,24 +329,41 @@ async def monitor_render_deployment(
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.get(
-                    f"{_RENDER_API}/deploys/{deploy_id}",
+                    f"{_RENDER_API}/services/{service_id}/deploys",
                     headers=headers,
                 )
             
+            await log(f"  Debug response status: {response.status_code}")
+            await log(f"  Debug response: {response.text[:500]}")
+            
             if response.status_code != 200:
                 await log(f"  [{attempt + 1:02d}] Failed to fetch deploy status (HTTP {response.status_code})")
-                await log(f"  Response: {response.text[:200]}")
                 await asyncio.sleep(10)
                 continue
             
             try:
-                deploy_data = response.json()
+                deploys_data = response.json()
             except Exception as json_err:
                 await log(f"  [{attempt + 1:02d}] JSON parse error: {json_err}")
                 await log(f"  Response text: {response.text[:200]}")
                 await asyncio.sleep(10)
                 continue
-            status = deploy_data.get("status", "unknown")
+            
+            # Find the specific deploy by ID
+            deploy = None
+            if isinstance(deploys_data, list):
+                deploy = next((d for d in deploys_data if d.get("id") == deploy_id), None)
+                if not deploy and deploys_data:
+                    deploy = deploys_data[0]
+            elif isinstance(deploys_data, dict):
+                deploy = deploys_data
+            
+            if not deploy:
+                await log(f"  [{attempt + 1:02d}] Deploy not found")
+                await asyncio.sleep(10)
+                continue
+            
+            status = deploy.get("status", "unknown")
             
             await log(f"  [{attempt + 1:02d}] Deploy status: {status.upper()}")
             
