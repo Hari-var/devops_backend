@@ -106,8 +106,8 @@ async def run_flow2(request: Request):
         status="pending",
         commit_sha=head_commit.get("id", ""),
         commit_message=head_commit.get("message", ""),
-        committed_at=head_commit.get("timestamp", ""),
         committed_by=head_commit.get("pusher", {}).get("name", ""),
+        committed_at=head_commit.get("timestamp", ""),
         changed_files=changed_files,
         config= loads(text_to_json(response.text)),
     )
@@ -130,41 +130,7 @@ async def run_flow2(request: Request):
     }
 
 
-@router.post("/run_flow")
-def run_flow(data):  # FastAPI already parses JSON
-    commits = data.get("commits", [])
 
-    repo_name = data.get("repository", {}).get("full_name", "")
-    ref = data.get("ref", "").replace("refs/heads/", "")
-
-    checker = check_config(commits)
-
-    # Safely get commit info
-    head_commit = data.get("head_commit", {})
-    commit_id = head_commit.get("id", "")
-    commit_message = head_commit.get("message", "")
-    commit_timestamp = head_commit.get("timestamp", "")
-
-    if not checker:
-        return {"message": "No config file found"}
-
-    # Build correct raw GitHub URL
-    raw_git = f"https://raw.githubusercontent.com/{repo_name}/{ref}/{checker}"
-
-
-    response = requests.get(raw_git)
-    print(response)
-
-    # if response.status_code != 200:
-    #     return {"error": "Failed to fetch file"}
-
-    file_content = response.text
-
-    return {
-        "message": "Config file found",
-        "file_path": checker,
-        "file_content": file_content
-    }
 
 if __name__ == "__main__":
     url=input("Enter the URL: ")

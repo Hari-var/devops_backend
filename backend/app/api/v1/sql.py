@@ -94,7 +94,7 @@ async def save_approval(repo: Repo_response) -> Approval:
         terraform_url=None,
         deployed_url=None,
         actions_run_url=None,
-        **repo.dict(),
+        **repo.model_dump(),
     )
     async with AsyncSessionLocal() as db:
         db.add(new_repo)

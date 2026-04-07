@@ -676,27 +676,59 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         # Determine deployment target
         deploy_target = str(cfg.get('DEPLOY_TARGET', 'app_service')).lower()
         service_id = None  # For Render deployments
+        deploy_id = None  # For Render deployments (set when create_render_service runs)
 
-        # ── STAGE 2: Infrastructure Provisioning ────────────────────────────
+        # ── STAGE 2: CI Pipeline Generation ─────────────────────────────
         await _set_stage(2)
-        await log("Starting infrastructure provisioning...", 2)
-        await log(f"Deploy target  : {deploy_target}", 2)
-        await log(f"App name       : {cfg.get('APP_NAME', 'devops-app')}", 2)
+        if deploy_target == "render":
+            # RENDER: Skip GitHub Actions YAML generation
+            await log("Skipping CI YAML generation (Render auto-deploys)", 2)
+            await log("Render will automatically deploy from GitHub on push", 2)
+        else:
+            # AZURE: Generate GitHub Actions YAML
+            await log("Generating CI pipeline YAML...", 2)
+            stage3_log = lambda m: log(m, 2)  # noqa: E731
+            await _scaffold_missing_files(repo, resolved_branch, tech, pat, stage3_log)
+            await _ensure_gitignore(repo, resolved_branch, pat)
+
+            # Generate CI/CD YAML with both build and deploy stages
+            ci_yaml = await _generate_ci_with_deploy(resolved_branch, tech, cfg)
+            await _commit_file(
+                repo, resolved_branch,
+                ".github/workflows/ci.yml",
+                ci_yaml,
+                "chore: add CI pipeline via DevOps Agent",
+                pat,
+            )
+            await log("Committed: .github/workflows/ci.yml with deploy stage", 2)
+
+            app_name = str(cfg.get("APP_NAME", "devops-app"))
+            resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
+            await _push_azure_secrets(repo, cfg, pat, app_name, resource_group)
+            await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 2)
+        
+        await log("CI/CD configuration complete.", 2)
+        
+        # ── STAGE 3: Infrastructure Provisioning ────────────────────────────
+        await _set_stage(3)
+        await log("Starting infrastructure provisioning...", 3)
+        await log(f"Deploy target  : {deploy_target}", 3)
+        await log(f"App name       : {cfg.get('APP_NAME', 'devops-app')}", 3)
         
         if deploy_target == "render":
             # RENDER DEPLOYMENT PATH
             from .render_deploy import create_render_service  # noqa: PLC0415
             
-            await log("Using Render for deployment", 2)
-            await log(f"Region: {cfg.get('REGION', 'oregon')}", 2)
-            await log(f"Plan: {cfg.get('PLAN', 'free')}", 2)
+            await log("Using Render for deployment", 3)
+            await log(f"Region: {cfg.get('REGION', 'oregon')}", 3)
+            await log(f"Plan: {cfg.get('PLAN', 'free')}", 3)
             
             deployed_url, service_id, deploy_id = await create_render_service(
                 repo=repo,
                 branch=resolved_branch,
                 tech=tech,
                 cfg=cfg,
-                log=lambda m: log(m, 2),
+                log=lambda m: log(m, 3),
             )
             
             async with AsyncSessionLocal() as db:
@@ -706,85 +738,83 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
                     rec.terraform_url = deployed_url
                     await db.commit()
             
-            await log(f"Provisioned URL: {deployed_url}", 2)
-            await log("Render service created successfully", 2)
+            await log(f"Provisioned URL: {deployed_url}", 3)
+            await log("Render service created successfully", 3)
         else:
             # AZURE/TERRAFORM DEPLOYMENT PATH
-            await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 2)
-            await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 2)
-            deployed_url = await _run_terraform(cfg, lambda m: log(m, 2))
+            await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 3)
+            await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
+            deployed_url = await _run_terraform(cfg, lambda m: log(m, 3))
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Approval).where(Approval.id == approval_id))
                 rec = r.scalar_one_or_none()
                 if rec:
                     rec.terraform_url = deployed_url
                     await db.commit()
-            await log(f"Provisioned URL: {deployed_url}", 2)
-            await log("Infrastructure provisioning complete.", 2)
+            await log(f"Provisioned URL: {deployed_url}", 3)
+            await log("Infrastructure provisioning complete.", 3)
         
-        await _push_stage_event(approval_id, 2, "info", "Infrastructure provisioning complete")
+        await _push_stage_event(approval_id, 3, "info", "Infrastructure provisioning complete")        
 
-        # ── STAGE 3: CI/CD Pipeline Generation ─────────────────────────────
-        await _set_stage(3)
-        
+        # ── STAGE 2: CD Pipeline Generation ─────────────────────────────
+        await _set_stage(4)
         if deploy_target == "render":
             # RENDER: Skip GitHub Actions YAML generation
-            await log("Skipping CI/CD YAML generation (Render auto-deploys)", 3)
-            await log("Render will automatically deploy from GitHub on push", 3)
+            await log("Skipping CD YAML generation (Render auto-deploys)", 4)
+            await log("Render will automatically deploy from GitHub on push", 4)
         else:
             # AZURE: Generate GitHub Actions YAML
-            await log("Generating CI/CD pipeline YAML...", 3)
-            stage3_log = lambda m: log(m, 3)  # noqa: E731
+            await log("Generating CD pipeline YAML...", 4)
+            stage3_log = lambda m: log(m, 4)  # noqa: E731
             await _scaffold_missing_files(repo, resolved_branch, tech, pat, stage3_log)
             await _ensure_gitignore(repo, resolved_branch, pat)
 
             # Generate CI/CD YAML with both build and deploy stages
-            cicd_yaml = await _generate_cicd_with_deploy(resolved_branch, tech, cfg)
+            cd_yaml = await _generate_cd_with_deploy(resolved_branch, tech, cfg)
             await _commit_file(
                 repo, resolved_branch,
-                ".github/workflows/cicd.yml",
-                cicd_yaml,
-                "chore: add CI/CD pipeline via DevOps Agent",
+                ".github/workflows/cd.yml",
+                cd_yaml,
+                "chore: add CD pipeline via DevOps Agent",
                 pat,
             )
-            await log("Committed: .github/workflows/cicd.yml with deploy stage", 3)
+            await log("Committed: .github/workflows/cd.yml with deploy stage", 4)
 
             app_name = str(cfg.get("APP_NAME", "devops-app"))
             resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
             await _push_azure_secrets(repo, cfg, pat, app_name, resource_group)
-            await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 3)
+            await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 4)
         
-        await log("CI/CD configuration complete.", 3)
-
+        await log("CD configuration complete.", 4)
         # ── STAGE 4: Monitor Deployment ─────────────────────────────────────
-        await _set_stage(4)
+        await _set_stage(5)
         
         if deploy_target == "render":
             # RENDER: Monitor via Render API
             from .render_deploy import monitor_render_deployment  # noqa: PLC0415
             
-            await log("Monitoring Render deployment...", 4)
+            await log("Monitoring Render deployment...", 5)
             status = await monitor_render_deployment(
                 d_id=deploy_id,
                 s_id=service_id,
-                log=lambda m: log(m, 4),
+                log=lambda m: log(m, 5),
                 timeout_minutes=15,
             )
             
             if status != "live":
                 raise RuntimeError(f"Render deployment failed with status: {status}")
             
-            await log("Render deployment complete", 4)
+            await log("Render deployment complete", 5)
             run_url = f"https://dashboard.render.com/web/{service_id}"
         else:
             # AZURE: Monitor GitHub Actions
-            await log("Waiting for GitHub Actions workflow to start...", 4)
+            await log("Waiting for GitHub Actions workflow to start...", 5)
             run_url = await _trigger_and_poll(repo, resolved_branch, pat,
-                                              lambda m: log(m, 4))
-            await log("GitHub Actions workflow complete.", 4)
+                                              lambda m: log(m, 5))
+            await log("GitHub Actions workflow complete.", 5)
 
         # ── DONE ─────────────────────────────────────────────────────────────
-        await _set_stage(5, status="done",
+        await _set_stage(6, status="done",
                          deployed_url=deployed_url,
                          actions_run_url=run_url or None)
         await log(f"PIPELINE COMPLETE", 0)
@@ -1041,7 +1071,7 @@ def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
     }
 
 
-async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> str:
+async def _generate_ci_with_deploy(branch: str, tech: dict, config: dict) -> str:
     """Generate CI/CD YAML with both build and deploy stages."""
     from .pipelines import _build_lang_steps, _build_deploy_steps  # noqa: PLC0415
     import yaml  # noqa: PLC0415
@@ -1061,7 +1091,7 @@ async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> s
     }
     artifact_path = artifact_paths.get(language, "dist/")
     
-    # Build job
+    # Build job (ci)
     build_steps = [
         {"uses": "actions/checkout@v4"},
         *lang_steps,
@@ -1072,7 +1102,34 @@ async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> s
         },
     ]
     
-    # Create deploy config
+    
+    # Create complete workflow
+    workflow = {
+        "name": "CI/CD Pipeline",
+        "on": {
+            "push": {"branches": [branch]},
+            "pull_request": {"branches": [branch]},
+        },
+        "jobs": {
+            "build": {
+                "runs-on": "ubuntu-latest",
+                "steps": build_steps,
+            },
+        },
+    }
+    
+    return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+async def _generate_cd_with_deploy(branch: str, tech: dict, config: dict) -> str:
+    """Generate CI/CD YAML with both build and deploy stages."""
+    from .pipelines import _build_lang_steps, _build_deploy_steps  # noqa: PLC0415
+    import yaml  # noqa: PLC0415
+    
+    language = tech.get("language", "python")
+    build_tool = tech.get("buildTool", "pip")
+    
+    
+    # Create deploy config (cd)
     deploy_config = {
         "infrastructure_type": "azure-web-app",
         "resource_name": config.get("APP_NAME", "devops-app"),
@@ -1093,10 +1150,6 @@ async def _generate_cicd_with_deploy(branch: str, tech: dict, config: dict) -> s
             "pull_request": {"branches": [branch]},
         },
         "jobs": {
-            "build": {
-                "runs-on": "ubuntu-latest",
-                "steps": build_steps,
-            },
             "deploy": {
                 "runs-on": "ubuntu-latest",
                 "needs": "build",
