@@ -134,7 +134,7 @@ async def _push_log(approval_id: str, message: str, stage: int = 0) -> None:
         if record is None:
             return
         record.logs = list(record.logs) + [message]
-        record.logs = logs[-1000:]
+        record.logs = record.logs[-1000:]
         if stage > 0:
             sl = dict(record.stage_logs or {})
             key = str(stage)
