@@ -750,6 +750,8 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 3)
             await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
             deployed_url = await _run_terraform(cfg, lambda m: log(m, 3))
+            await log("Waiting for Azure provisioning...", 3)
+            await asyncio.sleep(220)
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Approval).where(Approval.id == approval_id))
                 rec = r.scalar_one_or_none()
