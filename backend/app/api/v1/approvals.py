@@ -919,7 +919,7 @@ async def _scaffold_missing_files(
         await log(f"  Scaffolded: {filename}")
 
 
-async def _run_terraform(cfg: dict, log) -> str:
+async def _run_terraform(cfg: dict) -> str:
     import os
     import json as _json
     import tempfile
@@ -930,11 +930,11 @@ async def _run_terraform(cfg: dict, log) -> str:
     app_name: str = str(cfg.get("APP_NAME", "devops-app"))
     fallback_url = f"https://{app_name}.azurewebsites.net"
 
-    terraform_path = shutil.which("terraform")
+    terraform_path = shutil.which("terraform") or "./bin/terraform"
 
     try:
         if not terraform_path:
-            await log("terraform binary not found — skipping IaC provisioning")
+            # await log("terraform binary not found — skipping IaC provisioning")
             return fallback_url
 
         # Create temp working dir
@@ -990,18 +990,18 @@ output "app_url" {{
 
         # Terraform init
         rc, out = await _tf(["init", "-no-color"])
-        await log(f"terraform init: {'OK' if rc == 0 else 'FAILED'}")
+        # await log(f"terraform init: {'OK' if rc == 0 else 'FAILED'}")
 
         if rc != 0:
-            await log(out)
+            # await log(out)
             return fallback_url
 
         # Terraform apply
         rc, out = await _tf(["apply", "-auto-approve", "-no-color"])
-        await log(f"terraform apply: {'OK' if rc == 0 else 'FAILED'}")
+        # await log(f"terraform apply: {'OK' if rc == 0 else 'FAILED'}")
 
         if rc != 0:
-            await log(out)
+            # await log(out)
             return fallback_url
 
         # Get output
@@ -1017,8 +1017,8 @@ output "app_url" {{
         return fallback_url
 
     except Exception as exc:
-        await log(f"terraform exception: {exc}")
-        await log(traceback.format_exc())
+        # await log(f"terraform exception: {exc}")
+        # await log(traceback.format_exc())
         return fallback_url
 
 def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
@@ -1312,3 +1312,5 @@ def _iso_to_ts(iso: str) -> float:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
     except (ValueError, AttributeError):
         return 0.0
+
+
