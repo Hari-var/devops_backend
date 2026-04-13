@@ -48,6 +48,7 @@ _GITHUB_HEADERS = {
 # Ephemeral in-memory stores (intentionally NOT persisted)
 # ---------------------------------------------------------------------------
 
+
 # "owner/repo" → last seen config.py commit SHA  (dedup guard, resets on restart)
 _SEEN_SHAS: dict[str, str] = {}
 
@@ -133,6 +134,7 @@ async def _push_log(approval_id: str, message: str, stage: int = 0) -> None:
         if record is None:
             return
         record.logs = list(record.logs) + [message]
+        record.logs = logs[-1000:]
         if stage > 0:
             sl = dict(record.stage_logs or {})
             key = str(stage)
@@ -568,6 +570,9 @@ async def stream_logs(
             subs = _SUBSCRIBERS.get(approval_id, [])
             if queue in subs:
                 subs.remove(queue)
+            # Clean up empty subscriber lists
+            if not subs:
+                del _SUBSCRIBERS[approval_id]
 
     return StreamingResponse(
         _event_generator(),
@@ -841,6 +846,16 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await log(combined, 0)
         for queue in _SUBSCRIBERS.get(approval_id, []):
             queue.put_nowait("FAILED")
+    finally:
+        # Force cleanup of orphaned subscribers
+        if approval_id in _SUBSCRIBERS:
+            for queue in _SUBSCRIBERS[approval_id]:
+                try:
+                    queue.put_nowait("CLEANUP")
+                except:
+                    pass
+            del _SUBSCRIBERS[approval_id]
+        logger.info("Pipeline cleanup: removed subscribers for %s", approval_id)
 
 
 # ---------------------------------------------------------------------------

@@ -106,7 +106,7 @@ async def run_flow2(request: Request):
         status="pending",
         commit_sha=head_commit.get("id", ""),
         commit_message=head_commit.get("message", ""),
-        committed_by=head_commit.get("pusher", {}).get("name", ""),
+        committed_by=head_commit["pusher"].get("name", ""),
         committed_at=head_commit.get("timestamp", ""),
         changed_files=changed_files,
         config= loads(text_to_json(response.text)),
