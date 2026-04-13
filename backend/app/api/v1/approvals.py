@@ -612,6 +612,14 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
     async def log(msg: str, stage: int = 0) -> None:
         await _push_log(approval_id, msg, stage)
 
+    async def wait_with_logs(total_wait, interval):
+        for elapsed in range(0, total_wait, interval):
+            await asyncio.sleep(interval)
+            await log(
+                f"Waiting for Azure provisioning... {elapsed + interval}/{total_wait} seconds",
+                3
+            )
+
     async def _set_stage(stage: int, status: str | None = None, **kwargs: str | None) -> None:
         async with AsyncSessionLocal() as db:
             r = await db.execute(select(Approval).where(Approval.id == approval_id))
@@ -750,15 +758,8 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 3)
             await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
             deployed_url = await _run_terraform(cfg, lambda m: log(m, 3))
-            total_wait = 220
-            interval = 10
             await log("Waiting for Azure provisioning...", 3)
-            for elapsed in range(0, total_wait, interval):
-                await asyncio.sleep(interval)
-                await log(
-                    f"Waiting for Azure provisioning... {elapsed + interval}/{total_wait} seconds",
-                    3
-                )
+            await wait_with_logs(220, 10)
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Approval).where(Approval.id == approval_id))
                 rec = r.scalar_one_or_none()
