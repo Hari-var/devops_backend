@@ -930,10 +930,11 @@ async def _run_terraform(cfg: dict, log) -> str:
 
     app_name: str = str(cfg.get("APP_NAME", "devops-app"))
     fallback_url = f"https://{app_name}.azurewebsites.net"
+    terraform_path = shutil.which("terraform") or "./bin/terraform"
 
     try:
-        if not shutil.which("terraform"):
-            await log("  terraform binary not found — skipping IaC provisioning")
+        if not os.path.exists(terraform_path):
+            await log("terraform binary not found — skipping IaC provisioning")
             return fallback_url
 
         deploy_target: str = str(cfg.get("DEPLOY_TARGET", "app_service")).lower()
