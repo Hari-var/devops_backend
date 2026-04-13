@@ -933,15 +933,22 @@ async def _run_terraform(cfg: dict, log) -> str:
     terraform_path = shutil.which("terraform") or "./bin/terraform"
 
     try:
-        if not terraform_path:
+        # Fix 1: Proper terraform existence check
+        if not terraform_path or not os.path.exists(terraform_path):
             await log("terraform binary not found — skipping IaC provisioning")
             return fallback_url
 
-        # Create temp working dir
-        tf_dir = tempfile.mkdtemp(prefix="terraform_")
+        # Fix 2: Use TemporaryDirectory (auto cleanup)
+        with tempfile.TemporaryDirectory(prefix="terraform_") as tf_dir:
 
-        # Create Terraform main.tf dynamically
-        main_tf = f"""
+            await log(f"Using terraform directory: {tf_dir}")
+
+            # Fix 3: safer variable extraction
+            location = str(cfg.get("LOCATION", "eastus"))
+            resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
+
+            # Create Terraform main.tf dynamically
+            main_tf = f"""
 terraform {{
   required_providers {{
     azurerm = {{
@@ -959,8 +966,8 @@ module "webapp" {{
   source = "github.com/RAGHAVENDRA-VAM/Terraform_modules//modules/azure/webapp"
 
   app_name       = "{app_name}"
-  location       = "{cfg.get("LOCATION", "eastus")}"
-  resource_group = "{cfg.get("RESOURCE_GROUP", "devops-rg")}"
+  location       = "{location}"
+  resource_group = "{resource_group}"
 }}
 
 output "app_url" {{
@@ -968,53 +975,62 @@ output "app_url" {{
 }}
 """
 
-        with open(os.path.join(tf_dir, "main.tf"), "w") as f:
-            f.write(main_tf)
+            # Write main.tf
+            with open(os.path.join(tf_dir, "main.tf"), "w") as f:
+                f.write(main_tf)
 
-        env = {
-            **os.environ,
-            "TF_INPUT": "false",
-        }
+            env = {
+                **os.environ,
+                "TF_INPUT": "false",
+            }
 
-        async def _tf(args):
-            proc = await asyncio.create_subprocess_exec(
-                terraform_path,
-                *args,
-                cwd=tf_dir,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            stdout, _ = await proc.communicate()
-            return proc.returncode, stdout.decode()
+            async def _tf(args):
+                proc = await asyncio.create_subprocess_exec(
+                    terraform_path,
+                    *args,
+                    cwd=tf_dir,
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                stdout, _ = await proc.communicate()
+                return proc.returncode, stdout.decode(errors="replace")
 
-        # Terraform init
-        rc, out = await _tf(["init", "-no-color"])
-        await log(f"terraform init: {'OK' if rc == 0 else 'FAILED'}")
+            # Terraform init
+            await log("Running terraform init...")
+            rc, out = await _tf(["init", "-no-color", "-upgrade"])
+            await log(f"terraform init: {'OK' if rc == 0 else 'FAILED'}")
 
-        if rc != 0:
-            await log(out)
+            if rc != 0:
+                await log(out[-2000:])
+                return fallback_url
+
+            # Terraform apply
+            await log("Running terraform apply...")
+            rc, out = await _tf(["apply", "-auto-approve", "-no-color"])
+            await log(f"terraform apply: {'OK' if rc == 0 else 'FAILED'}")
+
+            if rc != 0:
+                await log(out[-2000:])
+                return fallback_url
+
+            # Terraform output
+            await log("Fetching terraform outputs...")
+            rc, out = await _tf(["output", "-json"])
+
+            if rc == 0:
+                try:
+                    outputs = _json.loads(out)
+                    url = outputs.get("app_url", {}).get("value")
+
+                    if url:
+                        await log(f"Terraform output URL: {url}")
+                        return url
+
+                except _json.JSONDecodeError:
+                    await log("Terraform output JSON parsing failed")
+
             return fallback_url
-
-        # Terraform apply
-        rc, out = await _tf(["apply", "-auto-approve", "-no-color"])
-        await log(f"terraform apply: {'OK' if rc == 0 else 'FAILED'}")
-
-        if rc != 0:
-            await log(out)
-            return fallback_url
-
-        # Get output
-        rc, out = await _tf(["output", "-json"])
-
-        if rc == 0:
-            outputs = _json.loads(out)
-            url = outputs.get("app_url", {}).get("value")
-
-            if url:
-                return url
-
-        return fallback_url
 
     except Exception as exc:
         await log(f"terraform exception: {exc}")
