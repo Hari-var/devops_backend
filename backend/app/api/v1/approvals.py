@@ -759,7 +759,6 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
             deployed_url = await _run_terraform(cfg, lambda m: log(m, 3))
             await log("Waiting for Azure provisioning...", 3)
-            await wait_with_logs(220, 10)
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Approval).where(Approval.id == approval_id))
                 rec = r.scalar_one_or_none()
@@ -928,6 +927,26 @@ async def _scaffold_missing_files(
         )
         await log(f"  Scaffolded: {filename}")
 
+async def wait_for_azure_app(app_name, resource_group, log):
+    from azure.identity import DefaultAzureCredential
+    from azure.mgmt.web import WebSiteManagementClient
+    import os
+
+    credential = DefaultAzureCredential()
+    subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
+
+    client = WebSiteManagementClient(credential, subscription_id)
+
+    for attempt in range(20):
+        try:
+            client.web_apps.get(resource_group, app_name)
+            await log("Azure WebApp ready", 3)
+            return True
+        except Exception:
+            await log(f"Waiting for Azure WebApp... attempt {attempt+1}", 3)
+            await asyncio.sleep(10)
+
+    return False
 
 async def _run_terraform(cfg: dict, log) -> str:
     import os
@@ -1023,7 +1042,12 @@ output "app_url" {{
             if rc != 0:
                 await log(out[-2000:])
                 return fallback_url
-
+            
+            await wait_for_azure_app(
+                app_name=app_name,
+                resource_group=resource_group,
+                log=log
+            )
             # Terraform output
             await log("Fetching terraform outputs...")
             rc, out = await _tf(["output", "-json"])
