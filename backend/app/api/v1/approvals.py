@@ -384,13 +384,32 @@ async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Health check
+# Health check and test endpoints
 # ---------------------------------------------------------------------------
 
 @router.get("/health")
 async def health_check() -> dict:
     """Simple health check endpoint."""
     return {"status": "healthy", "timestamp": time.time()}
+
+
+@router.post("/test-approve/{approval_id}")
+async def test_approve(
+    approval_id: str,
+    gh_token: str | None = Cookie(default=None),
+) -> dict:
+    """Test endpoint to verify basic approval flow without running pipeline."""
+    if not gh_token:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    
+    logger.info("Test approve called for %s", approval_id)
+    
+    # Just return immediately without doing anything
+    return {
+        "status": "test_success", 
+        "approval_id": approval_id,
+        "message": "Test endpoint working"
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -509,34 +528,65 @@ async def retry_approval(
 async def approve_approval(
     approval_id: str,
     gh_token: str | None = Cookie(default=None),
-    db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Approve an approval and start the deployment pipeline."""
     if not gh_token:
         raise HTTPException(status_code=401, detail="Not authenticated.")
     
+    logger.info("=== APPROVE START for %s ===", approval_id)
+    
     try:
-        result = await db.execute(select(Approval).where(Approval.id == approval_id))
-        record = result.scalar_one_or_none()
-        if not record:
-            raise HTTPException(status_code=404, detail="Approval not found.")
-        if record.status != "pending":
-            raise HTTPException(status_code=400, detail="Only pending approvals can be approved.")
-        
-        logger.info("Approve called for %s (prev_status=%s) — scheduling pipeline", approval_id, record.status)
-        record.status = "running"
-        await db.commit()
+        # Add timeout to the entire operation
+        return await asyncio.wait_for(
+            _approve_approval_impl(approval_id, gh_token),
+            timeout=10.0  # 10 second timeout for the approval endpoint
+        )
+    except asyncio.TimeoutError:
+        logger.error("Approval endpoint timeout for %s", approval_id)
+        raise HTTPException(status_code=504, detail="Approval request timed out")
+    except Exception as exc:
+        logger.error("Approval endpoint error for %s: %s", approval_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+
+
+async def _approve_approval_impl(approval_id: str, gh_token: str) -> dict:
+    """Implementation of approval logic with timeout protection."""
+    try:
+        # Use a separate session to avoid dependency injection issues
+        async with AsyncSessionLocal() as db:
+            logger.info("Database session created for %s", approval_id)
+            
+            result = await db.execute(select(Approval).where(Approval.id == approval_id))
+            record = result.scalar_one_or_none()
+            
+            if not record:
+                logger.warning("Approval not found: %s", approval_id)
+                raise HTTPException(status_code=404, detail="Approval not found.")
+                
+            if record.status != "pending":
+                logger.warning("Invalid status for approval %s: %s", approval_id, record.status)
+                raise HTTPException(status_code=400, detail="Only pending approvals can be approved.")
+            
+            logger.info("Updating approval status to running for %s", approval_id)
+            record.status = "running"
+            
+            # Commit the status change
+            await db.commit()
+            logger.info("Status committed successfully for %s", approval_id)
         
         # Start pipeline in background - don't await it
+        logger.info("Starting background pipeline task for %s", approval_id)
         asyncio.create_task(_run_pipeline(approval_id, gh_token))
         
-        return {"status": "running", "approval_id": approval_id}
+        response = {"status": "running", "approval_id": approval_id}
+        logger.info("=== APPROVE SUCCESS for %s: %s ===", approval_id, response)
+        return response
         
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as exc:
-        logger.error("Approval endpoint error for %s: %s", approval_id, exc)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+        logger.error("Implementation error for %s: %s", approval_id, exc, exc_info=True)
+        raise
 
 
 # ---------------------------------------------------------------------------

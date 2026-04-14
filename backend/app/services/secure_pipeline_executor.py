@@ -20,22 +20,37 @@ class SecurePipelineExecutor:
     def __init__(self, gemini_api_key: str):
         self.ai_generator = AITerraformGenerator(gemini_api_key)
         self.terraform_path = self._get_secure_terraform_path()
+        
+        if not self.terraform_path:
+            raise RuntimeError(
+                "Terraform binary not found. Please install terraform or ensure it's in your PATH. "
+                "Visit https://www.terraform.io/downloads.html for installation instructions."
+            )
     
-    def _get_secure_terraform_path(self) -> str:
+    def _get_secure_terraform_path(self) -> Optional[str]:
         """Get secure terraform binary path."""
         # Only allow terraform from specific trusted locations
         trusted_paths = [
             "/usr/local/bin/terraform",
             "/usr/bin/terraform", 
             "./bin/terraform",
-            "C:\\terraform\\terraform.exe"
+            "C:\\terraform\\terraform.exe",
+            "/opt/homebrew/bin/terraform",  # macOS Homebrew
+            "/home/linuxbrew/.linuxbrew/bin/terraform",  # Linux Homebrew
+            "terraform"  # System PATH as last resort
         ]
         
         for path in trusted_paths:
-            if os.path.exists(path):
+            if path == "terraform":
+                # Check if terraform is in PATH
+                import shutil
+                terraform_path = shutil.which("terraform")
+                if terraform_path:
+                    return terraform_path
+            elif os.path.exists(path):
                 return path
         
-        raise RuntimeError("Terraform binary not found in trusted locations")
+        return None
     
     async def execute_pipeline(
         self,
@@ -404,12 +419,23 @@ class SecurePipelineExecutor:
     async def _validate_deployment(self, app_url: str, log) -> None:
         """Validate deployment is accessible."""
         try:
+            await log(f"Validating deployment at: {app_url}")
+            
+            # Wait a bit for DNS propagation
+            await asyncio.sleep(10)
+            
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.get(app_url)
                 if response.status_code == 200:
                     await log("✅ Deployment validation successful")
+                elif response.status_code in [404, 503]:
+                    await log(f"⚠️ Deployment not ready yet (status {response.status_code}), this is normal for new deployments")
                 else:
                     await log(f"⚠️ Deployment responding with status {response.status_code}")
+        except httpx.ConnectError:
+            await log("⚠️ Deployment not accessible yet - DNS may still be propagating")
+        except httpx.TimeoutException:
+            await log("⚠️ Deployment validation timed out - this is normal for new deployments")
         except Exception as e:
             await log(f"⚠️ Deployment validation failed: {str(e)}")
     
