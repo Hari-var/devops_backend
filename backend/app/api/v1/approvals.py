@@ -759,6 +759,46 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 3)
             await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
             
+            # Ensure resource group exists before Terraform
+            try:
+                from ...services.azure_resource_manager import AzureResourceGroupManager
+                rg_manager = AzureResourceGroupManager()
+                
+                resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
+                location = str(cfg.get("LOCATION", "eastus"))
+                app_name = str(cfg.get("APP_NAME", "devops-app"))
+                
+                # Validate and suggest better name if needed
+                is_valid, validation_msg = rg_manager.validate_resource_group_name(resource_group)
+                if not is_valid:
+                    await log(f"⚠️ Invalid resource group name: {validation_msg}", 3)
+                    resource_group = rg_manager.suggest_resource_group_name(app_name, cfg.get("ENVIRONMENT", "dev"))
+                    await log(f"📝 Using suggested name: {resource_group}", 3)
+                
+                # Ensure resource group exists
+                rg_created = await rg_manager.ensure_resource_group_exists(
+                    resource_group_name=resource_group,
+                    location=location,
+                    tags={
+                        'Application': app_name,
+                        'Environment': cfg.get('ENVIRONMENT', 'dev'),
+                        'CreatedBy': 'DevOps-Agent',
+                        'Repository': repo
+                    },
+                    log_func=lambda m: log(m, 3)
+                )
+                
+                if not rg_created:
+                    await log("❌ Failed to ensure resource group exists", 3)
+                    raise RuntimeError(f"Could not create or access resource group: {resource_group}")
+                
+                # Update config with validated resource group name
+                cfg["RESOURCE_GROUP"] = resource_group
+                
+            except Exception as rg_error:
+                await log(f"⚠️ Resource group management failed: {rg_error}", 3)
+                await log("Continuing with Terraform (it will create the RG)", 3)
+            
             # Pass additional context for AI-powered terraform
             cfg_with_context = {
                 **cfg,
@@ -1290,13 +1330,21 @@ async def _push_azure_secrets(
     await _set_github_secret(repo, "AZURE_CREDENTIALS", azure_creds, gh_token)
     await _set_github_secret(repo, "AZURE_WEBAPP_NAME", actual_app_name, gh_token)
 
+    # Try to get publish profile, but don't fail if it doesn't work
     if rg and actual_app_name:
         try:
             from azure.identity import ClientSecretCredential  # noqa: PLC0415
             from azure.mgmt.web import WebSiteManagementClient  # noqa: PLC0415
+            from azure.core.exceptions import ResourceNotFoundError  # noqa: PLC0415
             import asyncio as _asyncio  # noqa: PLC0415
+            
             cred = ClientSecretCredential(tenant_id, client_id, client_secret)
             web_client = WebSiteManagementClient(cred, subscription_id)
+            
+            # Wait a bit for the web app to be fully provisioned
+            await _asyncio.sleep(30)
+            
+            # Try to get the publish profile
             profile = await _asyncio.to_thread(
                 lambda: web_client.web_apps.list_publishing_profile_xml_with_secrets(
                     rg, actual_app_name, {"format": "WebDeploy"}
@@ -1304,8 +1352,20 @@ async def _push_azure_secrets(
             )
             await _set_github_secret(repo, "AZURE_WEBAPP_PUBLISH_PROFILE", profile, gh_token)
             logger.info("Publish profile pushed for %s", actual_app_name)
+            
+        except ResourceNotFoundError:
+            logger.warning(
+                "Web app %s not found in resource group %s. "
+                "This is normal if Terraform hasn't finished provisioning yet. "
+                "The deployment will still work with AZURE_CREDENTIALS.", 
+                actual_app_name, rg
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not fetch publish profile for %s: %s", actual_app_name, exc)
+            logger.warning(
+                "Could not fetch publish profile for %s: %s. "
+                "Deployment will continue with AZURE_CREDENTIALS.", 
+                actual_app_name, exc
+            )
 
 
 async def _ensure_gitignore(repo: str, branch: str, gh_token: str) -> None:

@@ -9,10 +9,11 @@ PyYAML>=6.0.0
 cryptography>=41.0.0
 bcrypt>=4.0.0
 
-# Azure SDK for infrastructure validation
+# Azure SDK for infrastructure validation and management
 azure-identity>=1.15.0
 azure-mgmt-web>=7.0.0
 azure-mgmt-resource>=23.0.0
+azure-core>=1.29.0
 
 # Additional utilities
 python-dotenv>=1.0.0

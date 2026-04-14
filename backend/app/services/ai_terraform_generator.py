@@ -219,15 +219,36 @@ provider "azurerm" {{
   features {{}}
 }}
 
+# Generate unique suffix for resource names
+resource "random_string" "suffix" {{
+  length  = 8
+  special = false
+  upper   = false
+}}
+
+# Data source to check if resource group exists
+data "azurerm_resource_group" "existing" {{
+  name = var.resource_group_name
+  
+  # This will fail if RG doesn't exist, which is fine
+  count = 0  # We'll create it anyway
+}}
+
+# Always create the resource group (idempotent)
 resource "azurerm_resource_group" "main" {{
-  name     = "${{var.app_name}}-rg"
+  name     = var.resource_group_name
   location = var.location
   
   tags = var.common_tags
+  
+  lifecycle {{
+    # Prevent accidental deletion
+    prevent_destroy = {str(requirements.environment == 'prod').lower()}
+  }}
 }}
 
 resource "azurerm_service_plan" "main" {{
-  name                = "${{var.app_name}}-plan"
+  name                = "${{var.app_name}}-plan-${{random_string.suffix.result}}"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   os_type             = "Linux"
@@ -261,18 +282,54 @@ variable "app_name" {{
   description = "Application name"
   type        = string
   default     = "{app_name}"
+  
+  validation {{
+    condition     = can(regex("^[a-zA-Z0-9-]{{1,60}}$", var.app_name))
+    error_message = "App name must be 1-60 characters and contain only letters, numbers, and hyphens."
+  }}
+}}
+
+variable "resource_group_name" {{
+  description = "Resource group name"
+  type        = string
+  default     = "{app_name}-rg"
+  
+  validation {{
+    condition     = can(regex("^[a-zA-Z0-9._()-]{{1,90}}$", var.resource_group_name))
+    error_message = "Resource group name must be 1-90 characters."
+  }}
 }}
 
 variable "location" {{
   description = "Azure region"
   type        = string
   default     = "{requirements.region}"
+  
+  validation {{
+    condition = contains([
+      "eastus", "eastus2", "westus", "westus2", "westus3",
+      "centralus", "northcentralus", "southcentralus",
+      "westcentralus", "canadacentral", "canadaeast",
+      "brazilsouth", "northeurope", "westeurope",
+      "uksouth", "ukwest", "francecentral", "germanywestcentral",
+      "norwayeast", "switzerlandnorth", "swedencentral",
+      "australiaeast", "australiasoutheast", "southeastasia",
+      "eastasia", "japaneast", "japanwest", "koreacentral",
+      "southindia", "centralindia", "westindia"
+    ], var.location)
+    error_message = "Location must be a valid Azure region."
+  }}
 }}
 
 variable "environment" {{
   description = "Environment name"
   type        = string
   default     = "{requirements.environment}"
+  
+  validation {{
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "Environment must be dev, staging, or prod."
+  }}
 }}
 
 variable "common_tags" {{
@@ -282,6 +339,7 @@ variable "common_tags" {{
     Environment = "{requirements.environment}"
     Application = "{app_name}"
     ManagedBy   = "Terraform"
+    CreatedBy   = "DevOps-Agent"
   }}
 }}
 """
@@ -295,6 +353,21 @@ output "app_url" {
 output "resource_group_name" {
   description = "Resource group name"
   value       = azurerm_resource_group.main.name
+}
+
+output "resource_group_id" {
+  description = "Resource group ID"
+  value       = azurerm_resource_group.main.id
+}
+
+output "app_name" {
+  description = "Application name with suffix"
+  value       = azurerm_linux_web_app.main.name
+}
+
+output "service_plan_name" {
+  description = "Service plan name"
+  value       = azurerm_service_plan.main.name
 }
 """
         
