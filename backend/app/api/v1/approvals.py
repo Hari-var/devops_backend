@@ -808,7 +808,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 4)
         
         await log("CD configuration complete.", 4)
-        # ── STAGE 4: Monitor Deployment ─────────────────────────────────────
+        # ── STAGE 5: Monitor Deployment ─────────────────────────────────────
         await _set_stage(5)
         
         if deploy_target == "render":
@@ -835,14 +835,35 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
                                               lambda m: log(m, 5))
             await log("GitHub Actions workflow complete.", 5)
 
+        # ── STAGE 6: End-to-End Validation ──────────────────────────────────
+        await _set_stage(6)
+        
+        # Validate complete flow
+        from ..services.pipeline_flow_manager import PipelineFlowManager
+        flow_manager = PipelineFlowManager()
+        
+        await log("Performing end-to-end validation...", 6)
+        flow_valid = await flow_manager.validate_complete_flow(
+            repo=repo,
+            branch=resolved_branch, 
+            app_url=deployed_url,
+            log_func=lambda m: log(m, 6)
+        )
+        
+        if flow_valid:
+            await log("✅ End-to-end validation successful!", 6)
+        else:
+            await log("⚠️ Some validation checks failed, but deployment completed", 6)
+
         # ── DONE ─────────────────────────────────────────────────────────────
-        await _set_stage(6, status="done",
+        await _set_stage(7, status="done",
                          deployed_url=deployed_url,
                          actions_run_url=run_url or None)
         await log(f"PIPELINE COMPLETE", 0)
         await log(f"Deployed URL : {deployed_url}", 0)
         if run_url:
             await log(f"Actions Run  : {run_url}", 0)
+        await log(f"🎉 Your application is now live and accessible!", 0)
         for queue in _SUBSCRIBERS.get(approval_id, []):
             queue.put_nowait("DONE")
 
@@ -1234,94 +1255,20 @@ def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
 
 
 async def _generate_ci_with_deploy(branch: str, tech: dict, config: dict) -> str:
-    """Generate CI/CD YAML with both build and deploy stages."""
-    from .pipelines import _build_lang_steps, _build_deploy_steps  # noqa: PLC0415
-    import yaml  # noqa: PLC0415
+    """Generate complete CI workflow."""
+    from ..services.pipeline_flow_manager import PipelineFlowManager
     
-    language = tech.get("language", "python")
-    build_tool = tech.get("buildTool", "pip")
-    lang_steps = _build_lang_steps(language, build_tool)
-    
-    # Determine artifact path
-    artifact_paths = {
-        "javascript": "dist/",
-        "typescript": "dist/",
-        "python": "app.zip",
-        "java": "target/*.jar" if build_tool == "maven" else "build/libs/*.jar",
-        "go": "main",
-        "dotnet": "publish/",
-    }
-    artifact_path = artifact_paths.get(language, "dist/")
-    
-    # Build job (ci)
-    build_steps = [
-        {"uses": "actions/checkout@v4"},
-        *lang_steps,
-        {
-            "name": "Upload artifact",
-            "uses": "actions/upload-artifact@v4",
-            "with": {"name": "build-artifact", "path": artifact_path, "retention-days": 7},
-        },
-    ]
-    
-    
-    # Create complete workflow
-    workflow = {
-        "name": "CI/CD Pipeline",
-        "on": {
-            "push": {"branches": [branch]},
-            "pull_request": {"branches": [branch]},
-        },
-        "jobs": {
-            "build": {
-                "runs-on": "ubuntu-latest",
-                "steps": build_steps,
-            },
-        },
-    }
-    
-    return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    flow_manager = PipelineFlowManager()
+    workflows = await flow_manager.generate_complete_cicd_pipeline(branch, tech, config)
+    return workflows[".github/workflows/ci.yml"]
 
 async def _generate_cd_with_deploy(branch: str, tech: dict, config: dict) -> str:
-    """Generate CI/CD YAML with both build and deploy stages."""
-    from .pipelines import _build_lang_steps, _build_deploy_steps  # noqa: PLC0415
-    import yaml  # noqa: PLC0415
+    """Generate complete CD workflow."""
+    from ..services.pipeline_flow_manager import PipelineFlowManager
     
-    language = tech.get("language", "python")
-    build_tool = tech.get("buildTool", "pip")
-    
-    
-    # Create deploy config (cd)
-    deploy_config = {
-        "infrastructure_type": "azure-web-app",
-        "resource_name": config.get("APP_NAME", "devops-app"),
-        "resource_group": config.get("RESOURCE_GROUP", "devops-rg"),
-        "sku": config.get("APP_SERVICE_SKU", "B1"),
-        "app_type": "server",
-        "tech": tech,
-    }
-    
-    # Get deploy steps
-    deploy_steps = _build_deploy_steps(deploy_config)
-    
-    # Create complete workflow
-    workflow = {
-        "name": "CI/CD Pipeline",
-        "on": {
-            "push": {"branches": [branch]},
-            "pull_request": {"branches": [branch]},
-        },
-        "jobs": {
-            "deploy": {
-                "runs-on": "ubuntu-latest",
-                "needs": "build",
-                "if": f"github.ref == 'refs/heads/{branch}' && needs.build.result == 'success'",
-                "steps": deploy_steps,
-            },
-        },
-    }
-    
-    return yaml.dump(workflow, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    flow_manager = PipelineFlowManager()
+    workflows = await flow_manager.generate_complete_cicd_pipeline(branch, tech, config)
+    return workflows[".github/workflows/cd.yml"]
 
 
 async def _push_azure_secrets(
