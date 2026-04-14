@@ -34,7 +34,7 @@ import traceback
 
 from ...db import AsyncSessionLocal, get_db
 from ...models import Approval
-from ..services.subscriber_manager import subscriber_manager
+from ...services.subscriber_manager import subscriber_manager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -840,7 +840,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await _set_stage(6)
         
         # Validate complete flow
-        from ..services.pipeline_flow_manager import PipelineFlowManager
+        from ...services.pipeline_flow_manager import PipelineFlowManager
         flow_manager = PipelineFlowManager()
         
         await log("Performing end-to-end validation...", 6)
@@ -973,8 +973,8 @@ async def wait_for_azure_app(app_name, resource_group, log):
 async def _run_terraform(cfg: dict, tech: dict, log) -> str:
     """Run terraform using AI-generated secure configuration with Google Gemini."""
     import os
-    from ..services.secure_pipeline_executor import SecurePipelineExecutor
-    from ..services.ai_config import AIConfig
+    from ...services.secure_pipeline_executor import SecurePipelineExecutor
+    from ...services.ai_config import AIConfig
     
     # Check if AI is enabled
     if not AIConfig.is_ai_enabled():
@@ -1249,7 +1249,7 @@ def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
 
 async def _generate_ci_with_deploy(branch: str, tech: dict, config: dict) -> str:
     """Generate complete CI workflow."""
-    from ..services.pipeline_flow_manager import PipelineFlowManager
+    from ...services.pipeline_flow_manager import PipelineFlowManager
     
     flow_manager = PipelineFlowManager()
     workflows = await flow_manager.generate_complete_cicd_pipeline(branch, tech, config)
@@ -1257,7 +1257,7 @@ async def _generate_ci_with_deploy(branch: str, tech: dict, config: dict) -> str
 
 async def _generate_cd_with_deploy(branch: str, tech: dict, config: dict) -> str:
     """Generate complete CD workflow."""
-    from ..services.pipeline_flow_manager import PipelineFlowManager
+    from ...services.pipeline_flow_manager import PipelineFlowManager
     
     flow_manager = PipelineFlowManager()
     workflows = await flow_manager.generate_complete_cicd_pipeline(branch, tech, config)
