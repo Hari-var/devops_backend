@@ -75,7 +75,7 @@ def _find_config_file(commits: list) :
     for file in changed_files:
         if _CONFIG_PATTERN.search(file):
             return file, changed_files
-    return None
+    return None, changed_files
 
 
 @router.post("/run_flow2")

@@ -96,10 +96,17 @@ async def save_approval(repo: Repo_response) -> Approval:
         actions_run_url=None,
         **repo.model_dump(),
     )
-    async with AsyncSessionLocal() as db:
-        db.add(new_repo)
-        await db.commit()
-        await db.refresh(new_repo)
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(new_repo)
+            await db.commit()
+            await db.refresh(new_repo)
+    except asyncio.CancelledError:
+        # Don't suppress cancellation, but ensure clean state
+        raise
+    except Exception:
+        # Handle other database errors
+        raise
     return new_repo
 
 
@@ -155,41 +162,61 @@ async def approve_repo(commit_sha: str, db: AsyncSession):
 
 async def push_log(approval_id: str, message: str, stage: int = 0) -> None:
     """Append a log line to DB (flat logs + stage_logs) and fan-out to SSE subscribers."""
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Approval).where(Approval.id == approval_id))
-        record = result.scalar_one_or_none()
-        if record is None:
-            return
-        record.logs = list(record.logs) + [message]
-        if stage > 0:
-            sl = dict(record.stage_logs or {})
-            key = str(stage)
-            sl[key] = sl.get(key, []) + [message]
-            record.stage_logs = sl
-        await db.commit()
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Approval).where(Approval.id == approval_id))
+            record = result.scalar_one_or_none()
+            if record is None:
+                return
+            record.logs = list(record.logs) + [message]
+            if stage > 0:
+                sl = dict(record.stage_logs or {})
+                key = str(stage)
+                sl[key] = sl.get(key, []) + [message]
+                record.stage_logs = sl
+            await db.commit()
+    except asyncio.CancelledError:
+        # Don't suppress cancellation
+        raise
+    except Exception:
+        # Silently handle database errors in logging to prevent cascade failures
+        pass
 
-    # Fan-out to SSE subscribers
-    event_data = f"{stage}|{message}" if stage > 0 else message
-    for queue in _SUBSCRIBERS.get(approval_id, []):
-        queue.put_nowait(event_data)
+    # Fan-out to SSE subscribers (even if DB update failed)
+    try:
+        event_data = f"{stage}|{message}" if stage > 0 else message
+        for queue in _SUBSCRIBERS.get(approval_id, []):
+            queue.put_nowait(event_data)
+    except Exception:
+        # Ignore SSE errors to prevent cascade failures
+        pass
 
 
 async def update_pipeline_stage(approval_id: str, stage: int, status_val: str | None = None, **kwargs) -> None:
     """Update pipeline stage and optionally status and other fields."""
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Approval).where(Approval.id == approval_id))
-        record = result.scalar_one_or_none()
-        if record:
-            record.pipeline_stage = stage
-            if status_val:
-                record.status = status_val
-            for k, v in kwargs.items():
-                setattr(record, k, v)
-            await db.commit()
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Approval).where(Approval.id == approval_id))
+            record = result.scalar_one_or_none()
+            if record:
+                record.pipeline_stage = stage
+                if status_val:
+                    record.status = status_val
+                for k, v in kwargs.items():
+                    setattr(record, k, v)
+                await db.commit()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Silently handle database errors to prevent cascade failures
+        pass
     
-    # Emit stage change event
-    for queue in _SUBSCRIBERS.get(approval_id, []):
-        queue.put_nowait(f"STAGE:{stage}")
+    # Emit stage change event (even if DB update failed)
+    try:
+        for queue in _SUBSCRIBERS.get(approval_id, []):
+            queue.put_nowait(f"STAGE:{stage}")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
