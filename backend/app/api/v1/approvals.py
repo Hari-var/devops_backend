@@ -384,6 +384,16 @@ async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+@router.get("/health")
+async def health_check() -> dict:
+    """Simple health check endpoint."""
+    return {"status": "healthy", "timestamp": time.time()}
+
+
+# ---------------------------------------------------------------------------
 # List / get approvals
 # ---------------------------------------------------------------------------
 
@@ -503,17 +513,30 @@ async def approve_approval(
 ) -> dict:
     if not gh_token:
         raise HTTPException(status_code=401, detail="Not authenticated.")
-    result = await db.execute(select(Approval).where(Approval.id == approval_id))
-    record = result.scalar_one_or_none()
-    if not record:
-        raise HTTPException(status_code=404, detail="Approval not found.")
-    if record.status != "pending":
-        raise HTTPException(status_code=400, detail="Only pending approvals can be approved.")
-    logger.info("Approve called for %s (prev_status=%s) — scheduling pipeline", approval_id, record.status)
-    record.status = "running"
-    await db.commit()
-    asyncio.create_task(_run_pipeline(approval_id, gh_token))
-    return {"status": "running", "approval_id": approval_id}
+    
+    try:
+        result = await db.execute(select(Approval).where(Approval.id == approval_id))
+        record = result.scalar_one_or_none()
+        if not record:
+            raise HTTPException(status_code=404, detail="Approval not found.")
+        if record.status != "pending":
+            raise HTTPException(status_code=400, detail="Only pending approvals can be approved.")
+        
+        logger.info("Approve called for %s (prev_status=%s) — scheduling pipeline", approval_id, record.status)
+        record.status = "running"
+        await db.commit()
+        
+        # Start pipeline in background - don't await it
+        asyncio.create_task(_run_pipeline(approval_id, gh_token))
+        
+        return {"status": "running", "approval_id": approval_id}
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as exc:
+        logger.error("Approval endpoint error for %s: %s", approval_id, exc)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +611,33 @@ async def stream_logs(
 # ---------------------------------------------------------------------------
 
 async def _run_pipeline(approval_id: str, gh_token: str) -> None:
+    """Run the complete deployment pipeline with timeout protection."""
+    try:
+        # Set a reasonable timeout for the entire pipeline (30 minutes)
+        await asyncio.wait_for(_run_pipeline_impl(approval_id, gh_token), timeout=1800)
+    except asyncio.TimeoutError:
+        logger.error("Pipeline timeout for approval %s", approval_id)
+        async with AsyncSessionLocal() as db:
+            r = await db.execute(select(Approval).where(Approval.id == approval_id))
+            rec = r.scalar_one_or_none()
+            if rec:
+                rec.status = "failed"
+                await db.commit()
+        await _push_log(approval_id, "PIPELINE FAILED: Timeout after 30 minutes", 0)
+        subscriber_manager.broadcast_message(approval_id, "FAILED")
+    except Exception as exc:
+        logger.exception("Pipeline wrapper error for approval %s", approval_id)
+        async with AsyncSessionLocal() as db:
+            r = await db.execute(select(Approval).where(Approval.id == approval_id))
+            rec = r.scalar_one_or_none()
+            if rec:
+                rec.status = "failed"
+                await db.commit()
+        await _push_log(approval_id, f"PIPELINE FAILED: {repr(exc)}", 0)
+        subscriber_manager.broadcast_message(approval_id, "FAILED")
+
+
+async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Approval).where(Approval.id == approval_id))
         record = result.scalar_one_or_none()
