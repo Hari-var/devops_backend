@@ -4,6 +4,7 @@ import re
 from typing import Dict, Any, Optional
 import google.generativeai as genai
 from pydantic import BaseModel, Field
+from .ai_config import AIConfig
 
 
 class InfrastructureRequirements(BaseModel):
@@ -22,9 +23,11 @@ class InfrastructureRequirements(BaseModel):
 class AITerraformGenerator:
     """AI-powered Terraform configuration generator using Google Gemini."""
     
-    def __init__(self, gemini_api_key: str):
+    def __init__(self, gemini_api_key: str, model_name: Optional[str] = None, temperature: Optional[float] = None):
         genai.configure(api_key=gemini_api_key)
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        self.model_name = model_name or AIConfig.get_ai_model()
+        self.temperature = temperature or AIConfig.get_ai_temperature()
+        self.model = genai.GenerativeModel(self.model_name)
     
     async def generate_terraform_config(
         self, 
@@ -62,8 +65,8 @@ class AITerraformGenerator:
             lambda: self.model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=4000,
+                    temperature=self.temperature,
+                    max_output_tokens=AIConfig.get_max_output_tokens(),
                     candidate_count=1
                 )
             )

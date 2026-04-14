@@ -960,9 +960,15 @@ async def _run_terraform(cfg: dict, tech: dict, log) -> str:
     """Run terraform using AI-generated secure configuration with Google Gemini."""
     import os
     from ..services.secure_pipeline_executor import SecurePipelineExecutor
+    from ..services.ai_config import AIConfig
+    
+    # Check if AI is enabled
+    if not AIConfig.is_ai_enabled():
+        await log("AI terraform generation is disabled - using fallback terraform")
+        return await _run_terraform_fallback(cfg, log)
     
     # Get Google Gemini API key from environment
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    gemini_api_key = AIConfig.get_gemini_api_key()
     if not gemini_api_key:
         await log("Google Gemini API key not configured - using fallback terraform")
         return await _run_terraform_fallback(cfg, log)
@@ -987,8 +993,12 @@ async def _run_terraform(cfg: dict, tech: dict, log) -> str:
         return app_url
         
     except Exception as exc:
-        await log(f"AI-powered terraform failed, falling back: {exc}")
-        return await _run_terraform_fallback(cfg, log)
+        if AIConfig.should_fallback_on_error():
+            await log(f"AI-powered terraform failed, falling back: {exc}")
+            return await _run_terraform_fallback(cfg, log)
+        else:
+            await log(f"AI-powered terraform failed: {exc}")
+            raise
 
 
 async def _run_terraform_fallback(cfg: dict, log) -> str:
