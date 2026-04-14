@@ -757,7 +757,15 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
             # AZURE/TERRAFORM DEPLOYMENT PATH
             await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 3)
             await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
-            deployed_url = await _run_terraform(cfg, lambda m: log(m, 3))
+            
+            # Pass additional context for AI-powered terraform
+            cfg_with_context = {
+                **cfg,
+                "_approval_id": approval_id,
+                "_db": db
+            }
+            
+            deployed_url = await _run_terraform(cfg_with_context, tech, lambda m: log(m, 3))
             await log("Waiting for Azure provisioning...", 3)
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Approval).where(Approval.id == approval_id))
@@ -948,35 +956,81 @@ async def wait_for_azure_app(app_name, resource_group, log):
 
     return False
 
-async def _run_terraform(cfg: dict, log) -> str:
+async def _run_terraform(cfg: dict, tech: dict, log) -> str:
+    """Run terraform using AI-generated secure configuration with Google Gemini."""
+    import os
+    from ..services.secure_pipeline_executor import SecurePipelineExecutor
+    
+    # Get Google Gemini API key from environment
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key:
+        await log("Google Gemini API key not configured - using fallback terraform")
+        return await _run_terraform_fallback(cfg, log)
+    
+    try:
+        # Initialize secure pipeline executor
+        executor = SecurePipelineExecutor(gemini_api_key)
+        
+        # This will be set by the calling function
+        approval_id = cfg.get("_approval_id", 0)
+        db = cfg.get("_db")
+        
+        # Execute pipeline with AI-generated infrastructure
+        app_url = await executor.execute_pipeline(
+            approval_id=approval_id,
+            cfg=cfg,
+            tech=tech,
+            db=db,
+            log=log
+        )
+        
+        return app_url
+        
+    except Exception as exc:
+        await log(f"AI-powered terraform failed, falling back: {exc}")
+        return await _run_terraform_fallback(cfg, log)
+
+
+async def _run_terraform_fallback(cfg: dict, log) -> str:
+    """Fallback terraform implementation with basic security."""
     import os
     import json as _json
     import tempfile
     import asyncio
     import shutil
     import traceback
+    import re
 
-    app_name: str = str(cfg.get("APP_NAME", "devops-app"))
+    # Sanitize inputs
+    app_name = re.sub(r'[^a-zA-Z0-9\-]', '', str(cfg.get("APP_NAME", "devops-app")))[:30]
+    location = re.sub(r'[^a-zA-Z0-9]', '', str(cfg.get("LOCATION", "eastus")))[:20]
+    resource_group = re.sub(r'[^a-zA-Z0-9\-]', '', str(cfg.get("RESOURCE_GROUP", "devops-rg")))[:30]
+    
     fallback_url = f"https://{app_name}.azurewebsites.net"
 
-    terraform_path = shutil.which("terraform") or "./bin/terraform"
+    # Only allow terraform from trusted locations
+    trusted_terraform_paths = [
+        "/usr/local/bin/terraform",
+        "/usr/bin/terraform", 
+        "./bin/terraform",
+        "C:\\terraform\\terraform.exe"
+    ]
+    
+    terraform_path = None
+    for path in trusted_terraform_paths:
+        if os.path.exists(path):
+            terraform_path = path
+            break
+    
+    if not terraform_path:
+        await log("terraform binary not found in trusted locations")
+        return fallback_url
 
     try:
-        # Fix 1: Proper terraform existence check
-        if not terraform_path or not os.path.exists(terraform_path):
-            await log("terraform binary not found — skipping IaC provisioning")
-            return fallback_url
+        with tempfile.TemporaryDirectory(prefix="secure_terraform_") as tf_dir:
+            await log(f"Using secure terraform directory: {tf_dir}")
 
-        # Fix 2: Use TemporaryDirectory (auto cleanup)
-        with tempfile.TemporaryDirectory(prefix="terraform_") as tf_dir:
-
-            await log(f"Using terraform directory: {tf_dir}")
-
-            # Fix 3: safer variable extraction
-            location = str(cfg.get("LOCATION", "eastus"))
-            resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
-
-            # Create Terraform main.tf dynamically
+            # Create minimal secure Terraform configuration
             main_tf = f"""
 terraform {{
   required_providers {{
@@ -991,32 +1045,63 @@ provider "azurerm" {{
   features {{}}
 }}
 
-module "webapp" {{
-  source = "github.com/RAGHAVENDRA-VAM/Terraform_modules//modules/azure/webapp"
+resource "azurerm_resource_group" "main" {{
+  name     = "{resource_group}"
+  location = "{location}"
+  
+  tags = {{
+    Environment = "dev"
+    ManagedBy   = "DevOps-Agent"
+  }}
+}}
 
-  app_name       = "{app_name}"
-  location       = "{location}"
-  resource_group = "{resource_group}"
+resource "azurerm_service_plan" "main" {{
+  name                = "{app_name}-plan"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  os_type             = "Linux"
+  sku_name            = "B1"
+}}
+
+resource "azurerm_linux_web_app" "main" {{
+  name                = "{app_name}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_service_plan.main.location
+  service_plan_id     = azurerm_service_plan.main.id
+  
+  site_config {{
+    always_on = false
+  }}
 }}
 
 output "app_url" {{
-  value = module.webapp.app_url
+  value = "https://${{azurerm_linux_web_app.main.default_hostname}}"
 }}
 """
 
-            # Write main.tf
-            with open(os.path.join(tf_dir, "main.tf"), "w") as f:
+            # Write main.tf with restricted permissions
+            tf_file = os.path.join(tf_dir, "main.tf")
+            with open(tf_file, "w") as f:
                 f.write(main_tf)
+            os.chmod(tf_file, 0o600)
 
             env = {
                 **os.environ,
                 "TF_INPUT": "false",
+                "TF_IN_AUTOMATION": "true"
             }
 
-            async def _tf(args):
+            async def _tf_secure(args):
+                # Validate arguments
+                safe_args = []
+                allowed_args = {"init", "apply", "output", "-no-color", "-upgrade", "-auto-approve", "-json"}
+                for arg in args:
+                    if arg in allowed_args:
+                        safe_args.append(arg)
+                
                 proc = await asyncio.create_subprocess_exec(
                     terraform_path,
-                    *args,
+                    *safe_args,
                     cwd=tf_dir,
                     env=env,
                     stdout=asyncio.subprocess.PIPE,
@@ -1026,21 +1111,17 @@ output "app_url" {{
                 return proc.returncode, stdout.decode(errors="replace")
 
             # Terraform init
-            await log("Running terraform init...")
-            rc, out = await _tf(["init", "-no-color", "-upgrade"])
-            await log(f"terraform init: {'OK' if rc == 0 else 'FAILED'}")
-
+            await log("Running secure terraform init...")
+            rc, out = await _tf_secure(["init", "-no-color", "-upgrade"])
             if rc != 0:
-                await log(out[-2000:])
+                await log("terraform init failed")
                 return fallback_url
 
             # Terraform apply
-            await log("Running terraform apply...")
-            rc, out = await _tf(["apply", "-auto-approve", "-no-color"])
-            await log(f"terraform apply: {'OK' if rc == 0 else 'FAILED'}")
-
+            await log("Running secure terraform apply...")
+            rc, out = await _tf_secure(["apply", "-auto-approve", "-no-color"])
             if rc != 0:
-                await log(out[-2000:])
+                await log("terraform apply failed")
                 return fallback_url
             
             await wait_for_azure_app(
@@ -1048,28 +1129,69 @@ output "app_url" {{
                 resource_group=resource_group,
                 log=log
             )
+            
             # Terraform output
-            await log("Fetching terraform outputs...")
-            rc, out = await _tf(["output", "-json"])
-
+            rc, out = await _tf_secure(["output", "-json"])
             if rc == 0:
                 try:
                     outputs = _json.loads(out)
                     url = outputs.get("app_url", {}).get("value")
-
                     if url:
-                        await log(f"Terraform output URL: {url}")
                         return url
-
                 except _json.JSONDecodeError:
-                    await log("Terraform output JSON parsing failed")
+                    pass
 
             return fallback_url
 
     except Exception as exc:
-        await log(f"terraform exception: {exc}")
-        await log(traceback.format_exc())
+        await log(f"terraform fallback failed: {type(exc).__name__}")
         return fallback_url
+
+    env = {
+        **os.environ,
+        "TF_VAR_app_name":        app_name,
+        "TF_VAR_resource_group":  str(cfg.get("RESOURCE_GROUP", "devops-rg")),
+        "TF_VAR_location":        str(cfg.get("LOCATION", "eastus")),
+        "TF_VAR_sku":             str(cfg.get("APP_SERVICE_SKU", "B1")),
+        "TF_VAR_node_count":      str(cfg.get("NODE_COUNT", "1")),
+        "TF_VAR_vm_size":         str(cfg.get("VM_SIZE", "Standard_B1s")),
+        "TF_VAR_admin_username":  str(cfg.get("ADMIN_USER", "azureuser")),
+        "TF_INPUT":               "false",
+    }
+
+    async def _tf(args: list[str]) -> tuple[int, str]:
+        proc = await asyncio.create_subprocess_exec(
+            "terraform", *args,
+            cwd=tf_dir, env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        return proc.returncode, stdout.decode(errors="replace")
+
+    rc, out = await _tf(["init", "-no-color"])
+    await log(f"  terraform init: {'OK' if rc == 0 else 'FAILED'}")
+    if rc != 0:
+        await log(out[-500:])
+        return fallback_url
+
+    rc, out = await _tf(["apply", "-auto-approve", "-no-color"])
+    await log(f"  terraform apply: {'OK' if rc == 0 else 'FAILED'}")
+    if rc != 0:
+        await log(out[-500:])
+        return fallback_url
+
+    rc, out = await _tf(["output", "-json"])
+    if rc == 0:
+        try:
+            outputs = _json.loads(out)
+            url = outputs.get("app_url", {}).get("value", "")
+            if url:
+                return str(url)
+        except _json.JSONDecodeError:
+            pass
+
+    return fallback_url
 
 def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
     deploy_target: str = str(cfg.get("DEPLOY_TARGET", "")).lower()
