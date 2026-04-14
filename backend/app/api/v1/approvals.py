@@ -34,6 +34,7 @@ import traceback
 
 from ...db import AsyncSessionLocal, get_db
 from ...models import Approval
+from ..services.subscriber_manager import subscriber_manager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -52,8 +53,8 @@ _GITHUB_HEADERS = {
 # "owner/repo" → last seen config.py commit SHA  (dedup guard, resets on restart)
 _SEEN_SHAS: dict[str, str] = {}
 
-# SSE subscribers: approval_id → list[asyncio.Queue]
-_SUBSCRIBERS: dict[str, list[asyncio.Queue]] = {}
+# SSE subscribers: managed by thread-safe SubscriberManager
+# _SUBSCRIBERS: dict[str, list[asyncio.Queue]] = {}  # Replaced by subscriber_manager
 
 # Poller control flag
 _POLLER_ENABLED: bool = True
@@ -144,8 +145,9 @@ async def _push_log(approval_id: str, message: str, stage: int = 0) -> None:
 
     # Fan-out: prefix with stage so frontend can route to correct panel
     event_data = f"{stage}|{message}" if stage > 0 else message
-    for queue in _SUBSCRIBERS.get(approval_id, []):
-        queue.put_nowait(event_data)
+    sent_count = subscriber_manager.broadcast_message(approval_id, event_data)
+    if sent_count > 0:
+        logger.debug(f"Broadcasted message to {sent_count} subscribers for {approval_id}")
 
 
 async def _push_stage_event(approval_id: str, stage: int, severity: str, message: str) -> None:
@@ -360,6 +362,9 @@ async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
     async with AsyncSessionLocal() as db:
         all_approvals = (await db.execute(select(Approval))).scalars().all()
 
+    # Get subscriber statistics
+    subscriber_stats = subscriber_manager.get_stats()
+
     return {
         "token_set": bool(token),
         "token_preview": token_preview,
@@ -374,6 +379,7 @@ async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
             {"id": a.id, "repo": a.repo, "status": a.status, "sha": a.commit_sha}
             for a in all_approvals
         ],
+        "subscriber_stats": subscriber_stats,
     }
 
 
@@ -528,7 +534,7 @@ async def stream_logs(
 
     async def _event_generator() -> AsyncGenerator[str, None]:
         queue: asyncio.Queue = asyncio.Queue()
-        _SUBSCRIBERS.setdefault(approval_id, []).append(queue)
+        subscriber_manager.add_subscriber(approval_id, queue)
 
         # Replay existing state from DB
         async with AsyncSessionLocal() as s:
@@ -567,12 +573,8 @@ async def stream_logs(
                     if terminal:
                         break
         finally:
-            subs = _SUBSCRIBERS.get(approval_id, [])
-            if queue in subs:
-                subs.remove(queue)
-            # Clean up empty subscriber lists
-            if not subs:
-                del _SUBSCRIBERS[approval_id]
+            # Thread-safe subscriber removal
+            subscriber_manager.remove_subscriber(approval_id, queue)
 
     return StreamingResponse(
         _event_generator(),
@@ -632,8 +634,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
                     setattr(rec, k, v)
                 await db.commit()
         # Emit a stage-change event so UI can advance the stepper
-        for queue in _SUBSCRIBERS.get(approval_id, []):
-            queue.put_nowait(f"STAGE:{stage}")
+        subscriber_manager.broadcast_message(approval_id, f"STAGE:{stage}")
 
     try:
         from .analysis import TechDetectionRequest, tech_detection  # noqa: PLC0415
@@ -864,8 +865,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         if run_url:
             await log(f"Actions Run  : {run_url}", 0)
         await log(f"🎉 Your application is now live and accessible!", 0)
-        for queue in _SUBSCRIBERS.get(approval_id, []):
-            queue.put_nowait("DONE")
+        subscriber_manager.broadcast_message(approval_id, "DONE")
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("Pipeline failed for approval %s", approval_id)
@@ -882,18 +882,11 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         combined = "PIPELINE FAILED: " + (err_msg or "") + "\n" + (tb or "")
         # Ensure the entire traceback is stored as a single PIPELINE-prefixed message
         await log(combined, 0)
-        for queue in _SUBSCRIBERS.get(approval_id, []):
-            queue.put_nowait("FAILED")
+        subscriber_manager.broadcast_message(approval_id, "FAILED")
     finally:
-        # Force cleanup of orphaned subscribers
-        if approval_id in _SUBSCRIBERS:
-            for queue in _SUBSCRIBERS[approval_id]:
-                try:
-                    queue.put_nowait("CLEANUP")
-                except:
-                    pass
-            del _SUBSCRIBERS[approval_id]
-        logger.info("Pipeline cleanup: removed subscribers for %s", approval_id)
+        # Force cleanup of orphaned subscribers - thread-safe
+        cleanup_count = subscriber_manager.cleanup_approval(approval_id)
+        logger.info(f"Pipeline cleanup: removed {cleanup_count} subscribers for {approval_id}")
 
 
 # ---------------------------------------------------------------------------
