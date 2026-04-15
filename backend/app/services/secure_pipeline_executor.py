@@ -217,7 +217,6 @@ class SecurePipelineExecutor:
         """Execute Terraform with security controls."""
         
         app_name = cfg["APP_NAME"]
-        fallback_url = f"https://{app_name}.azurewebsites.net"
         
         # Use secure temporary directory
         with tempfile.TemporaryDirectory(prefix="secure_terraform_") as tf_dir:
@@ -254,7 +253,7 @@ class SecurePipelineExecutor:
                 
             except Exception as e:
                 await log(f"Terraform execution failed: {str(e)}")
-                return fallback_url
+                raise
     
     def _is_safe_filename(self, filename: str) -> bool:
         """Validate filename to prevent path traversal attacks."""
@@ -368,19 +367,18 @@ class SecurePipelineExecutor:
         
         if rc != 0:
             await log(f"terraform apply failed: {out[-1000:]}")
-            return fallback_url
+            raise RuntimeError("Terraform apply failed")
         
         await log("terraform apply: OK")
         
         # Get outputs
-        return await self._get_terraform_outputs(tf_dir, env, log, fallback_url)
+        return await self._get_terraform_outputs(tf_dir, env, log)
     
     async def _get_terraform_outputs(
         self, 
         tf_dir: str, 
         env: Dict[str, str], 
-        log,
-        fallback_url: str
+        log
     ) -> str:
         """Get terraform outputs securely."""
         await log("Fetching terraform outputs...")
@@ -401,7 +399,7 @@ class SecurePipelineExecutor:
             except json.JSONDecodeError:
                 await log("Failed to parse terraform outputs")
         
-        return fallback_url
+        raise RuntimeError("Failed to get app URL from Terraform output")
     
     async def _update_approval_status(
         self, 

@@ -5,11 +5,14 @@ python-dotenv
 pydantic
 pyyaml
 google-generativeai
+cryptography
+bcrypt
 azure-mgmt-resource
 azure-mgmt-web
 azure-mgmt-containerservice
 azure-mgmt-compute
 azure-mgmt-network
+azure-core
 azure-identity
 pynacl
 sqlalchemy[asyncio]

@@ -34,7 +34,7 @@ class AITerraformGenerator:
         requirements: InfrastructureRequirements,
         app_name: str
     ) -> Dict[str, str]:
-        """Generate Terraform configuration using Google Gemini."""
+        """Generate Terraform configuration AND GitHub Actions workflow using Google Gemini."""
         
         prompt = self._build_prompt(requirements, app_name)
         
@@ -42,7 +42,7 @@ class AITerraformGenerator:
             # Generate content using Gemini
             response = await self._generate_async(prompt)
             
-            # Extract and validate Terraform configuration
+            # Extract and validate Terraform configuration + workflow
             config_files = self._parse_terraform_response(response.text)
             
             # Add security and compliance configurations
@@ -73,11 +73,11 @@ class AITerraformGenerator:
         )
     
     def _build_prompt(self, requirements: InfrastructureRequirements, app_name: str) -> str:
-        """Build AI prompt for Terraform generation."""
+        """Build AI prompt for Terraform and GitHub Actions workflow generation."""
         return f"""
-You are an expert DevOps engineer specializing in Terraform and Azure infrastructure. Generate secure, production-ready Terraform configurations.
+You are an expert DevOps engineer specializing in Terraform, Azure infrastructure, and GitHub Actions CI/CD pipelines. Generate a complete infrastructure-as-code solution.
 
-Generate a complete Terraform configuration for deploying a {requirements.app_type} application with the following requirements:
+Generate a complete solution for deploying a {requirements.app_type} application with the following requirements:
 
 Application Details:
 - Name: {app_name}
@@ -92,51 +92,162 @@ Infrastructure Requirements:
 - Cache Required: {requirements.cache_required}
 - Compliance: {', '.join(requirements.compliance_requirements) or 'None'}
 
-Generate the following files:
-1. main.tf - Main infrastructure resources
-2. variables.tf - Input variables
-3. outputs.tf - Output values
-4. versions.tf - Provider versions
+Generate EXACTLY 5 files:
 
-Requirements:
-- Use Azure provider
-- Include appropriate resource sizing based on traffic expectations
-- Add monitoring and logging
-- Include security best practices
-- Add tags for resource management
-- Use data sources where appropriate
-- Include conditional resources based on requirements
+1. **main.tf** - Main infrastructure resources
+2. **variables.tf** - Input variables with defaults
+3. **outputs.tf** - Output values (must include app_url)
+4. **versions.tf** - Provider versions
+5. **terraform-deploy.yml** - GitHub Actions workflow for deployment
 
-Format the response as:
+IMPORTANT REQUIREMENTS:
+
+For Terraform files:
+- Use Azure provider version ~> 3.0
+- Include app_url output that returns the application URL
+- Use variables for all configurable values
+- Add appropriate resource sizing based on traffic expectations ({requirements.expected_traffic})
+- Include monitoring and logging resources
+- Add security best practices
+- Use consistent naming with app_name variable
+- Include tags for resource management
+- Add conditional resources based on database/cache requirements
+- CRITICAL: Use data sources to reference existing resources when possible
+- CRITICAL: Add lifecycle rules to prevent destruction of important resources
+- CRITICAL: Use try() function for optional outputs to handle missing resources gracefully
+- CRITICAL: Include import blocks for resources that might already exist
+- CRITICAL: Add appropriate app_command_line INSIDE site_config block based on app type:
+  * Static React/Vue/Angular: app_command_line = "npx serve -s ."
+  * Node.js Express: app_command_line = "npm start"
+  * Python FastAPI: app_command_line = "uvicorn app:app --host 0.0.0.0 --port 8000"
+  * Python Flask: app_command_line = "python app.py"
+  * Python Django: app_command_line = "python manage.py runserver 0.0.0.0:8000"
+  * Java: app_command_line = "java -jar app.jar"
+- CRITICAL: Set correct application_stack (node_version, python_version, java_version) INSIDE site_config block
+- CRITICAL: Add app_settings block with environment variables and build settings:
+  * Python: SCM_DO_BUILD_DURING_DEPLOYMENT = "true", ENABLE_ORYX_BUILD = "true"
+  * Node.js: WEBSITE_NODE_DEFAULT_VERSION = "18-lts", WEBSITE_RUN_FROM_PACKAGE = "1"
+  * All: WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false", WEBSITE_HTTPLOGGING_RETENTION_DAYS = "7"
+
+For resource group handling:
+- Use data source to check if resource group exists first
+- Only create resource group if it doesn't exist
+- Use lifecycle prevent_destroy for production environments
+
+For GitHub Actions workflow:
+- Name: "🏗️ Terraform Infrastructure Deployment"
+- Trigger: workflow_dispatch with approval_id input
+- Use ubuntu-latest runner
+- Include these environment variables:
+  - TF_VERSION: "1.6.0"
+  - ARM_CLIENT_ID: ${{{{ secrets.AZURE_CLIENT_ID }}}}
+  - ARM_CLIENT_SECRET: ${{{{ secrets.AZURE_CLIENT_SECRET }}}}
+  - ARM_SUBSCRIPTION_ID: ${{{{ secrets.AZURE_SUBSCRIPTION_ID }}}}
+  - ARM_TENANT_ID: ${{{{ secrets.AZURE_TENANT_ID }}}}
+- Include these steps in order:
+  1. Checkout code (actions/checkout@v4)
+  2. Setup Terraform (hashicorp/setup-terraform@v3)
+  3. Azure Login (azure/login@v1)
+  4. Terraform Format Check
+  5. Terraform Validate
+  6. Terraform Init (with backend config if needed)
+  7. Terraform Plan (using variables from variables.tf)
+  8. Terraform Apply
+  9. Export Outputs (based on outputs.tf)
+  10. Deployment Summary
+- Use working-directory: ./terraform for all terraform commands
+- Include proper error handling and status reporting
+- Use emojis in step names for better UX
+- Add step to handle existing resources (terraform import if needed)
+
+Format the response EXACTLY as follows:
+
 ```hcl
 // main.tf
-[main.tf content]
+[Complete main.tf content here with data sources and lifecycle rules]
 
 // variables.tf  
-[variables.tf content]
+[Complete variables.tf content here]
 
 // outputs.tf
-[outputs.tf content]
+[Complete outputs.tf content here with try() functions]
 
 // versions.tf
-[versions.tf content]
+[Complete versions.tf content here]
 ```
+
+```yaml
+// terraform-deploy.yml
+[Complete GitHub Actions workflow YAML content here with import handling]
+```
+
+Ensure all files are complete, production-ready, handle existing resources gracefully, and work together seamlessly.
 """
     
     def _parse_terraform_response(self, response: str) -> Dict[str, str]:
-        """Parse AI response into separate Terraform files."""
+        """Parse AI response into separate Terraform files and GitHub Actions workflow."""
         files = {}
         
-        # Extract code blocks
-        pattern = r'// (\w+\.tf)\s*\n```(?:hcl)?\s*\n(.*?)\n```'
-        matches = re.findall(pattern, response, re.DOTALL)
+        # Extract HCL code blocks (Terraform files)
+        hcl_pattern = r'// (\w+\.tf)\s*\n```(?:hcl)?\s*\n(.*?)\n```'
+        hcl_matches = re.findall(hcl_pattern, response, re.DOTALL)
         
-        for filename, content in matches:
+        for filename, content in hcl_matches:
             files[filename] = content.strip()
+        
+        # Extract YAML code blocks (GitHub Actions workflow)
+        yaml_pattern = r'// ([\w-]+\.yml)\s*\n```(?:yaml)?\s*\n(.*?)\n```'
+        yaml_matches = re.findall(yaml_pattern, response, re.DOTALL)
+        
+        for filename, content in yaml_matches:
+            files[filename] = content.strip()
+        
+        # Alternative patterns if the above don't work
+        if not files:
+            # Try broader patterns
+            patterns = [
+                r'// (\w+\.(?:tf|yml))\s*\n(.*?)(?=\n// \w+\.(?:tf|yml)|$)',  # Alternative pattern
+                r'\*\*(\w+\.(?:tf|yml))\*\*[^\n]*\n```(?:hcl|yaml)?\s*\n(.*?)\n```'  # Bold filename pattern
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, response, re.DOTALL)
+                for filename, content in matches:
+                    if filename not in files:  # Don't overwrite if already found
+                        files[filename] = content.strip()
+        
+        # If still no files found, try to extract from simple code blocks
+        if not files:
+            # Look for any code blocks and try to identify by content
+            all_blocks = re.findall(r'```(?:hcl|yaml|terraform)?\s*\n(.*?)\n```', response, re.DOTALL)
+            
+            for i, block in enumerate(all_blocks):
+                block = block.strip()
+                if not block:
+                    continue
+                    
+                # Try to identify file type by content
+                if block.startswith('name:') and ('on:' in block or 'jobs:' in block):
+                    files['terraform-deploy.yml'] = block
+                elif 'terraform {' in block and 'required_providers' in block:
+                    files['versions.tf'] = block
+                elif 'variable "' in block:
+                    files['variables.tf'] = block
+                elif 'output "' in block:
+                    files['outputs.tf'] = block
+                elif 'resource "' in block or 'data "' in block:
+                    files['main.tf'] = block
         
         # Ensure we have at least main.tf
         if 'main.tf' not in files:
             files['main.tf'] = self._extract_main_tf_fallback(response)
+        
+        # Validate and clean up files
+        for filename, content in files.items():
+            if content:
+                # Remove any remaining comment markers
+                content = re.sub(r'^\s*//.*?\n', '', content, flags=re.MULTILINE)
+                files[filename] = content.strip()
         
         return files
     
@@ -201,20 +312,13 @@ data "azurerm_client_config" "current" {{}}
         
         sku = sku_map.get(requirements.expected_traffic, 'B1')
         
+        # Determine startup command based on app type and language
+        startup_command = self._get_startup_command(requirements)
+        
+        # Determine app settings based on language and framework
+        app_settings = self._get_app_settings(requirements)
+        
         main_tf = f"""
-terraform {{
-  required_providers {{
-    azurerm = {{
-      source  = "hashicorp/azurerm"
-      version = "~> 3.0"
-    }}
-    random = {{
-      source  = "hashicorp/random"
-      version = "~> 3.1"
-    }}
-  }}
-}}
-
 provider "azurerm" {{
   features {{}}
 }}
@@ -230,20 +334,32 @@ resource "random_string" "suffix" {{
 data "azurerm_resource_group" "existing" {{
   name = var.resource_group_name
   
-  # This will fail if RG doesn't exist, which is fine
-  count = 0  # We'll create it anyway
+  # This will return null if RG doesn't exist
+  count = 0  # We'll handle this with try() in locals
 }}
 
-# Always create the resource group (idempotent)
-resource "azurerm_resource_group" "main" {{
-  name     = var.resource_group_name
+# Local values for conditional resource creation
+locals {{
+  # Check if resource group exists
+  rg_exists = can(data.azurerm_resource_group.existing)
+  
+  # Use existing RG if it exists, otherwise create new one
+  resource_group_name = var.resource_group_name
   location = var.location
+}}
+
+# Create resource group only if it doesn't exist
+resource "azurerm_resource_group" "main" {{
+  name     = local.resource_group_name
+  location = local.location
   
   tags = var.common_tags
   
   lifecycle {{
-    # Prevent accidental deletion
+    # Prevent accidental deletion in production
     prevent_destroy = {str(requirements.environment == 'prod').lower()}
+    # Ignore changes to tags that might be added externally
+    ignore_changes = [tags]
   }}
 }}
 
@@ -266,11 +382,17 @@ resource "azurerm_linux_web_app" "main" {{
   site_config {{
     always_on = {str(requirements.environment != 'dev').lower()}
     
+    {startup_command}
+    
     application_stack {{
       {"python_version = \"3.11\"" if requirements.language == "python" else ""}
-      {"node_version = \"18-lts\"" if requirements.language == "javascript" else ""}
+      {"node_version = \"18-lts\"" if requirements.language in ["javascript", "typescript"] else ""}
       {"java_version = \"17\"" if requirements.language == "java" else ""}
     }}
+  }}
+  
+  app_settings = {{
+    {app_settings}
   }}
   
   tags = var.common_tags
@@ -371,11 +493,135 @@ output "service_plan_name" {
 }
 """
         
+        versions_tf = """
+terraform {
+  required_version = ">= 1.0"
+  
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.1"
+    }
+  }
+}
+"""
+        
         return {
             'main.tf': main_tf,
             'variables.tf': variables_tf,
-            'outputs.tf': outputs_tf
+            'outputs.tf': outputs_tf,
+            'versions.tf': versions_tf
         }
+    
+    def _get_startup_command(self, requirements: InfrastructureRequirements) -> str:
+        """Get appropriate startup command based on app type and language."""
+        
+        # Static frontend apps (React, Vue, Angular)
+        if (requirements.app_type in ["spa", "web"] and 
+            requirements.language in ["javascript", "typescript"] and
+            requirements.framework in ["react", "vue", "angular", "vite", None]):
+            return 'app_command_line = "npx serve -s ."'
+        
+        # Node.js applications
+        elif requirements.language in ["javascript", "typescript"]:
+            if requirements.framework == "express":
+                return 'app_command_line = "npm start"'
+            elif requirements.framework == "next":
+                return 'app_command_line = "npm run start"'
+            else:
+                return 'app_command_line = "npm start"'
+        
+        # Python applications
+        elif requirements.language == "python":
+            if requirements.framework == "fastapi":
+                return 'app_command_line = "uvicorn app:app --host 0.0.0.0 --port 8000"'
+            elif requirements.framework == "flask":
+                return 'app_command_line = "python app.py"'
+            elif requirements.framework == "django":
+                return 'app_command_line = "python manage.py runserver 0.0.0.0:8000"'
+            else:
+                return 'app_command_line = "python app.py"'
+        
+        # Java applications
+        elif requirements.language == "java":
+            return 'app_command_line = "java -jar app.jar"'
+        
+        # Default - let Azure auto-detect
+        else:
+            return '# app_command_line = "auto-detect"'
+    
+    def _get_app_settings(self, requirements: InfrastructureRequirements) -> str:
+        """Get app settings based on language and framework."""
+        
+        settings = []
+        
+        # Common settings for all apps
+        settings.extend([
+            'WEBSITE_NODE_DEFAULT_VERSION = "18-lts"',
+            'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"',
+            'WEBSITE_HTTPLOGGING_RETENTION_DAYS = "7"'
+        ])
+        
+        # Python-specific settings
+        if requirements.language == "python":
+            settings.extend([
+                'SCM_DO_BUILD_DURING_DEPLOYMENT = "true"',
+                'ENABLE_ORYX_BUILD = "true"',
+                'POST_BUILD_SCRIPT_PATH = ""',
+                'PRE_BUILD_SCRIPT_PATH = ""'
+            ])
+            
+            # Framework-specific settings
+            if requirements.framework == "django":
+                settings.extend([
+                    'DJANGO_SETTINGS_MODULE = "myproject.settings"',
+                    'PYTHONPATH = "/home/site/wwwroot"'
+                ])
+            elif requirements.framework == "flask":
+                settings.extend([
+                    'FLASK_APP = "app.py"',
+                    'FLASK_ENV = "production"'
+                ])
+            elif requirements.framework == "fastapi":
+                settings.extend([
+                    'PYTHONPATH = "/home/site/wwwroot"'
+                ])
+        
+        # Node.js specific settings
+        elif requirements.language in ["javascript", "typescript"]:
+            settings.extend([
+                'WEBSITE_NODE_DEFAULT_VERSION = "18-lts"',
+                'NPM_CONFIG_PRODUCTION = "false"',
+                'WEBSITE_RUN_FROM_PACKAGE = "1"'
+            ])
+            
+            # Framework-specific settings
+            if requirements.framework == "next":
+                settings.extend([
+                    'NEXTJS_BUILD_COMMAND = "npm run build"',
+                    'NEXTJS_START_COMMAND = "npm run start"'
+                ])
+        
+        # Java specific settings
+        elif requirements.language == "java":
+            settings.extend([
+                'JAVA_OPTS = "-Dserver.port=80"',
+                'WEBSITES_PORT = "80"'
+            ])
+        
+        # Environment-specific settings
+        if requirements.environment == "prod":
+            settings.extend([
+                'WEBSITE_HTTPLOGGING_RETENTION_DAYS = "30"',
+                'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "true"'
+            ])
+        
+        # Join settings with proper formatting
+        return '\n    '.join(settings)
     
     def _extract_main_tf_fallback(self, response: str) -> str:
         """Extract main.tf content as fallback."""

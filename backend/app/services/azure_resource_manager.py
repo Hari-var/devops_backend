@@ -163,15 +163,20 @@ class AzureResourceGroupManager:
         
         return True, "Valid resource group name"
     
-    def suggest_resource_group_name(self, app_name: str, environment: str = "dev") -> str:
-        """Suggest a valid resource group name based on app name and environment."""
+    def suggest_resource_group_name(self, base_name: str, environment: str = "dev") -> str:
+        """Suggest a valid resource group name based on base name and environment."""
         import re
         
-        # Clean app name
-        clean_app_name = re.sub(r'[^a-zA-Z0-9\-]', '', app_name)[:50]
+        # Clean base name (could be app name or original resource group name)
+        clean_base_name = re.sub(r'[^a-zA-Z0-9\-]', '', base_name)[:50]
         clean_environment = re.sub(r'[^a-zA-Z0-9\-]', '', environment)[:10]
         
-        suggested_name = f"{clean_app_name}-{clean_environment}-rg"
+        # If the base name already looks like a resource group (ends with -rg), preserve it
+        if clean_base_name.endswith('-rg'):
+            suggested_name = clean_base_name
+        else:
+            # If it doesn't end with -rg, add it
+            suggested_name = f"{clean_base_name}-{clean_environment}-rg"
         
         # Ensure it's valid
         is_valid, _ = self.validate_resource_group_name(suggested_name)

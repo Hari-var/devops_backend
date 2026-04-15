@@ -72,6 +72,12 @@ def _sanitize(value: str, max_len: int = 100) -> str:
     return value.replace("\n", "").replace("\r", "")[:max_len]
 
 
+def _decode_html_entities(text: str) -> str:
+    """Decode HTML entities like &quot; to actual characters."""
+    import html
+    return html.unescape(text)
+
+
 async def _fetch_json(url: str, token: str, params: dict | None = None) -> dict | list | None:
     async with httpx.AsyncClient(timeout=15) as client:
         res = await client.get(url, headers=_gh_headers(token), params=params or {})
@@ -183,7 +189,8 @@ async def start_poller() -> None:
 
 
 async def _poll_once() -> None:
-    token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+    import os as _os  # noqa: PLC0415
+    token = _os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
     if not token:
         logger.warning("Poller: no GITHUB_PERSONAL_ACCESS_TOKEN set, skipping")
         return
@@ -331,7 +338,8 @@ async def poll_now(gh_token: str | None = Cookie(default=None)) -> dict:
 async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
     if not gh_token:
         raise HTTPException(status_code=401, detail="Not authenticated.")
-    token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+    import os as _os  # noqa: PLC0415
+    token = _os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
     token_preview = (token[:8] + "...") if token else "NOT SET"
 
     github_ok = False
@@ -381,6 +389,37 @@ async def debug_state(gh_token: str | None = Cookie(default=None)) -> dict:
         ],
         "subscriber_stats": subscriber_stats,
     }
+
+
+@router.get("/{approval_id}/status")
+async def get_approval_status(
+    approval_id: str,
+    gh_token: str | None = Cookie(default=None),
+) -> dict:
+    """Get current status of an approval for frontend polling."""
+    if not gh_token:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Approval).where(Approval.id == approval_id))
+            record = result.scalar_one_or_none()
+            
+            if not record:
+                raise HTTPException(status_code=404, detail="Approval not found.")
+            
+            return {
+                "approval_id": approval_id,
+                "status": record.status,
+                "pipeline_stage": getattr(record, "pipeline_stage", 0),
+                "last_updated": time.time(),
+                "is_terminal": record.status in ["done", "failed", "rejected"]
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Status check error for %s: %s", approval_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to get approval status")
 
 
 # ---------------------------------------------------------------------------
@@ -574,9 +613,15 @@ async def _approve_approval_impl(approval_id: str, gh_token: str) -> dict:
             await db.commit()
             logger.info("Status committed successfully for %s", approval_id)
         
+        # Send immediate status update to frontend via SSE
+        await _push_log(approval_id, "Approval confirmed - starting deployment pipeline...", 0)
+        
         # Start pipeline in background - don't await it
         logger.info("Starting background pipeline task for %s", approval_id)
-        asyncio.create_task(_run_pipeline(approval_id, gh_token))
+        task = asyncio.create_task(_run_pipeline(approval_id, gh_token))
+        
+        # Add task name for better debugging
+        task.set_name(f"pipeline-{approval_id}")
         
         response = {"status": "running", "approval_id": approval_id}
         logger.info("=== APPROVE SUCCESS for %s: %s ===", approval_id, response)
@@ -586,6 +631,14 @@ async def _approve_approval_impl(approval_id: str, gh_token: str) -> dict:
         raise
     except Exception as exc:
         logger.error("Implementation error for %s: %s", approval_id, exc, exc_info=True)
+        
+        # Send error message to frontend immediately
+        try:
+            await _push_log(approval_id, f"Approval failed: {str(exc)}", 0)
+            subscriber_manager.broadcast_message(approval_id, "FAILED")
+        except Exception:
+            pass  # Don't let logging errors prevent error handling
+        
         raise
 
 
@@ -663,27 +716,52 @@ async def stream_logs(
 async def _run_pipeline(approval_id: str, gh_token: str) -> None:
     """Run the complete deployment pipeline with timeout protection."""
     try:
-        # Set a reasonable timeout for the entire pipeline (30 minutes)
-        await asyncio.wait_for(_run_pipeline_impl(approval_id, gh_token), timeout=1800)
+        # Set a reasonable timeout for the entire pipeline (45 minutes)
+        await asyncio.wait_for(_run_pipeline_impl(approval_id, gh_token), timeout=2700)
     except asyncio.TimeoutError:
         logger.error("Pipeline timeout for approval %s", approval_id)
-        async with AsyncSessionLocal() as db:
-            r = await db.execute(select(Approval).where(Approval.id == approval_id))
-            rec = r.scalar_one_or_none()
-            if rec:
-                rec.status = "failed"
-                await db.commit()
-        await _push_log(approval_id, "PIPELINE FAILED: Timeout after 30 minutes", 0)
+        
+        # Update database status
+        try:
+            async with AsyncSessionLocal() as db:
+                r = await db.execute(select(Approval).where(Approval.id == approval_id))
+                rec = r.scalar_one_or_none()
+                if rec:
+                    rec.status = "failed"
+                    await db.commit()
+        except Exception:
+            pass  # Don't let DB errors prevent timeout handling
+        
+        # Send timeout message to frontend
+        timeout_msg = "PIPELINE FAILED: Timeout after 45 minutes. This may be due to:"
+        await _push_log(approval_id, timeout_msg, 0)
+        await _push_log(approval_id, "• Google Gemini API timeout or rate limiting", 0)
+        await _push_log(approval_id, "• Azure resource provisioning delays", 0)
+        await _push_log(approval_id, "• Network connectivity issues", 0)
+        await _push_log(approval_id, "💡 Try again or check your API keys and network connection", 0)
+        
+        # Broadcast failure to all subscribers
         subscriber_manager.broadcast_message(approval_id, "FAILED")
+        
     except Exception as exc:
         logger.exception("Pipeline wrapper error for approval %s", approval_id)
-        async with AsyncSessionLocal() as db:
-            r = await db.execute(select(Approval).where(Approval.id == approval_id))
-            rec = r.scalar_one_or_none()
-            if rec:
-                rec.status = "failed"
-                await db.commit()
-        await _push_log(approval_id, f"PIPELINE FAILED: {repr(exc)}", 0)
+        
+        # Update database status
+        try:
+            async with AsyncSessionLocal() as db:
+                r = await db.execute(select(Approval).where(Approval.id == approval_id))
+                rec = r.scalar_one_or_none()
+                if rec:
+                    rec.status = "failed"
+                    await db.commit()
+        except Exception:
+            pass  # Don't let DB errors prevent error handling
+        
+        # Send error message to frontend
+        error_msg = f"PIPELINE FAILED: {repr(exc)}"
+        await _push_log(approval_id, error_msg, 0)
+        
+        # Broadcast failure to all subscribers
         subscriber_manager.broadcast_message(approval_id, "FAILED")
 
 
@@ -698,7 +776,8 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
         cfg: dict = dict(record.config)
     
     # Use PAT for write operations instead of OAuth token
-    pat = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+    import os as _os  # noqa: PLC0415
+    pat = _os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
     if not pat:
         await _push_log(approval_id, "ERROR: GITHUB_PERSONAL_ACCESS_TOKEN not set", 0)
         async with AsyncSessionLocal() as db:
@@ -799,14 +878,11 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
             await log("Skipping CI YAML generation (Render auto-deploys)", 2)
             await log("Render will automatically deploy from GitHub on push", 2)
         else:
-            # AZURE: Generate GitHub Actions YAML
+            # AZURE: Generate CI workflow immediately in Stage 2
             await log("Generating CI pipeline YAML...", 2)
-            stage3_log = lambda m: log(m, 2)  # noqa: E731
-            await _scaffold_missing_files(repo, resolved_branch, tech, pat, stage3_log)
-            await _ensure_gitignore(repo, resolved_branch, pat)
-
-            # Generate CI/CD YAML with both build and deploy stages
-            ci_yaml = await _generate_ci_with_deploy(resolved_branch, tech, cfg)
+            
+            # Generate CI workflow (build only)
+            ci_yaml = await _generate_ci_only(resolved_branch, tech, cfg)
             await _commit_file(
                 repo, resolved_branch,
                 ".github/workflows/ci.yml",
@@ -814,20 +890,28 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                 "chore: add CI pipeline via DevOps Agent",
                 pat,
             )
-            await log("Committed: .github/workflows/ci.yml with deploy stage", 2)
-
-            app_name = str(cfg.get("APP_NAME", "devops-app"))
-            resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
-            await _push_azure_secrets(repo, cfg, pat, app_name, resource_group)
-            await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 2)
+            await log("✅ Committed: .github/workflows/ci.yml (build only)", 2)
+            
+            # Prepare repository (scaffolding and gitignore)
+            await log("Preparing repository structure...", 2)
+            stage2_log = lambda m: log(m, 2)  # noqa: E731
+            await _scaffold_missing_files(repo, resolved_branch, tech, pat, stage2_log)
+            await _ensure_gitignore(repo, resolved_branch, pat)
+            await log("Repository structure prepared", 2)
         
-        await log("CI/CD configuration complete.", 2)
+        await log("CI pipeline generation complete.", 2)
         
         # ── STAGE 3: Infrastructure Provisioning ────────────────────────────
         await _set_stage(3)
         await log("Starting infrastructure provisioning...", 3)
         await log(f"Deploy target  : {deploy_target}", 3)
         await log(f"App name       : {cfg.get('APP_NAME', 'devops-app')}", 3)
+        
+        # Check deployment strategy
+        from ...services.deployment_config import deployment_manager, DeploymentStrategy
+        
+        strategy = deployment_manager.get_strategy()
+        await log(f"Deployment strategy: {strategy.value}", 3)
         
         if deploy_target == "render":
             # RENDER DEPLOYMENT PATH
@@ -859,63 +943,85 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
             await log(f"Resource group : {cfg.get('RESOURCE_GROUP', 'devops-rg')}", 3)
             await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
             
-            # Ensure resource group exists before Terraform
-            try:
-                from ...services.azure_resource_manager import AzureResourceGroupManager
-                rg_manager = AzureResourceGroupManager()
-                
-                resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
-                location = str(cfg.get("LOCATION", "eastus"))
-                app_name = str(cfg.get("APP_NAME", "devops-app"))
-                
-                # Validate and suggest better name if needed
-                is_valid, validation_msg = rg_manager.validate_resource_group_name(resource_group)
-                if not is_valid:
-                    await log(f"⚠️ Invalid resource group name: {validation_msg}", 3)
-                    resource_group = rg_manager.suggest_resource_group_name(app_name, cfg.get("ENVIRONMENT", "dev"))
-                    await log(f"📝 Using suggested name: {resource_group}", 3)
-                
-                # Ensure resource group exists
-                rg_created = await rg_manager.ensure_resource_group_exists(
-                    resource_group_name=resource_group,
-                    location=location,
-                    tags={
-                        'Application': app_name,
-                        'Environment': cfg.get('ENVIRONMENT', 'dev'),
-                        'CreatedBy': 'DevOps-Agent',
-                        'Repository': repo
-                    },
-                    log_func=lambda m: log(m, 3)
-                )
-                
-                if not rg_created:
-                    await log("❌ Failed to ensure resource group exists", 3)
-                    raise RuntimeError(f"Could not create or access resource group: {resource_group}")
-                
-                # Update config with validated resource group name
-                cfg["RESOURCE_GROUP"] = resource_group
-                
-            except Exception as rg_error:
-                await log(f"⚠️ Resource group management failed: {rg_error}", 3)
-                await log("Continuing with Terraform (it will create the RG)", 3)
+            if strategy == DeploymentStrategy.GITHUB_ACTIONS:
+                await log("🚀 Using GitHub Actions for secure Terraform deployment", 3)
+                await log("✅ Benefits: Secure credentials, audit trail, team collaboration", 3)
+            else:
+                await log(f"⚠️ Using {strategy.value} deployment strategy", 3)
             
-            # Pass additional context for AI-powered terraform
+            # Ensure resource group exists before Terraform (for local execution)
+            if strategy == DeploymentStrategy.LOCAL_EXECUTION:
+                try:
+                    from ...services.azure_resource_manager import AzureResourceGroupManager
+                    rg_manager = AzureResourceGroupManager()
+                    
+                    resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
+                    location = str(cfg.get("LOCATION", "eastus"))
+                    app_name = str(cfg.get("APP_NAME", "devops-app"))
+                    
+                    # Validate and suggest better name if needed
+                    is_valid, validation_msg = rg_manager.validate_resource_group_name(resource_group)
+                    if not is_valid:
+                        await log(f"⚠️ Invalid resource group name: {validation_msg}", 3)
+                        # Try to fix the resource group name while preserving the original intent
+                        suggested_name = rg_manager.suggest_resource_group_name(resource_group, cfg.get("ENVIRONMENT", "dev"))
+                        await log(f"📝 Using corrected name: {suggested_name} (based on original: {resource_group})", 3)
+                        resource_group = suggested_name
+                    else:
+                        await log(f"✅ Resource group name '{resource_group}' is valid", 3)
+                    
+                    # Ensure resource group exists
+                    rg_created = await rg_manager.ensure_resource_group_exists(
+                        resource_group_name=resource_group,
+                        location=location,
+                        tags={
+                            'Application': app_name,
+                            'Environment': cfg.get('ENVIRONMENT', 'dev'),
+                            'CreatedBy': 'DevOps-Agent',
+                            'Repository': repo
+                        },
+                        log_func=lambda m: log(m, 3)
+                    )
+                    
+                    if not rg_created:
+                        await log("❌ Failed to ensure resource group exists", 3)
+                        raise RuntimeError(f"Could not create or access resource group: {resource_group}")
+                    
+                    # Update config with validated resource group name
+                    cfg["RESOURCE_GROUP"] = resource_group
+                    
+                except Exception as rg_error:
+                    await log(f"⚠️ Resource group management failed: {rg_error}", 3)
+                    await log("Continuing with Terraform (it will create the RG)", 3)
+            
+            # Pass additional context for terraform execution
             cfg_with_context = {
                 **cfg,
                 "_approval_id": approval_id,
-                "_db": db
+                "_repo": repo,
+                "_branch": resolved_branch
             }
             
             deployed_url = await _run_terraform(cfg_with_context, tech, lambda m: log(m, 3))
-            await log("Waiting for Azure provisioning...", 3)
+            
+            # Decode any HTML entities in the URL before logging and storing
+            if deployed_url:
+                deployed_url = _decode_html_entities(deployed_url)
+            
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Approval).where(Approval.id == approval_id))
                 rec = r.scalar_one_or_none()
                 if rec:
                     rec.terraform_url = deployed_url
                     await db.commit()
+            
             await log(f"Provisioned URL: {deployed_url}", 3)
-            await log("Infrastructure provisioning complete.", 3)
+            
+            if strategy == DeploymentStrategy.GITHUB_ACTIONS:
+                await log("✅ GitHub Actions deployment completed successfully", 3)
+                await log("📊 Check GitHub Actions tab for detailed logs and audit trail", 3)
+            else:
+                await log("Infrastructure provisioning complete.", 3)
         
         await _push_stage_event(approval_id, 3, "info", "Infrastructure provisioning complete")        
 
@@ -926,14 +1032,99 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
             await log("Skipping CD YAML generation (Render auto-deploys)", 4)
             await log("Render will automatically deploy from GitHub on push", 4)
         else:
-            # AZURE: Generate GitHub Actions YAML
-            await log("Generating CD pipeline YAML...", 4)
-            stage3_log = lambda m: log(m, 4)  # noqa: E731
-            await _scaffold_missing_files(repo, resolved_branch, tech, pat, stage3_log)
-            await _ensure_gitignore(repo, resolved_branch, pat)
-
-            # Generate CI/CD YAML with both build and deploy stages
-            cd_yaml = await _generate_cd_with_deploy(resolved_branch, tech, cfg)
+            # AZURE: Generate CD workflow with actual resource names from Terraform
+            await log("Generating CD pipeline YAML with actual resource names...", 4)
+            
+            # Extract actual app name and resource group from the deployed URL and Terraform state
+            actual_app_name = cfg.get("APP_NAME", "devops-app")
+            actual_resource_group = cfg.get("RESOURCE_GROUP", "devops-rg")
+            
+            if deployed_url and "azurewebsites.net" in deployed_url:
+                # Extract actual app name from URL: https://my-app178488mnv4.azurewebsites.net -> my-app178488mnv4
+                import re
+                url_match = re.search(r'https://([^.]+)\.azurewebsites\.net', deployed_url)
+                if url_match:
+                    actual_app_name = url_match.group(1)
+                    await log(f"Extracted actual app name: {actual_app_name}", 4)
+                    
+                    # Try to determine the actual resource group that Terraform used
+                    # Check if Terraform used a different resource group name
+                    if strategy == DeploymentStrategy.GITHUB_ACTIONS:
+                        # For GitHub Actions, try to get resource group from Terraform outputs
+                        await log("Attempting to verify actual resource group from Terraform...", 4)
+                        # The resource group might be different from config if Terraform modified it
+                        # For now, assume it matches the app name pattern
+                        if "-" in actual_app_name:
+                            # If app name has suffix, resource group might too
+                            base_name = actual_app_name.split("-")[0] + "-" + actual_app_name.split("-")[1] if len(actual_app_name.split("-")) > 1 else actual_app_name
+                            potential_rg = base_name + "-rg"
+                            await log(f"Potential resource group based on app name: {potential_rg}", 4)
+                            # For safety, we'll still use the configured resource group but log the potential mismatch
+                            if potential_rg != actual_resource_group:
+                                await log(f"⚠️ Resource group mismatch: config={actual_resource_group}, potential={potential_rg}", 4)
+                else:
+                    await log(f"Could not extract app name from URL: {deployed_url}", 4)
+            
+            await log(f"Using for deployment: app={actual_app_name}, rg={actual_resource_group}", 4)
+            
+            # Update config with actual names for CI/CD generation
+            cicd_config = {
+                **cfg,
+                "APP_NAME": actual_app_name,
+                "RESOURCE_GROUP": actual_resource_group
+            }
+            
+            # Verify the Azure Web App actually exists before generating CD workflow
+            await log("Verifying Azure Web App exists before deployment...", 4)
+            try:
+                from azure.identity import DefaultAzureCredential
+                from azure.mgmt.web import WebSiteManagementClient
+                from azure.core.exceptions import ResourceNotFoundError
+                import os
+                
+                credential = DefaultAzureCredential()
+                subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID") or cfg.get("SUBSCRIPTION_ID")
+                
+                if subscription_id:
+                    web_client = WebSiteManagementClient(credential, subscription_id)
+                    
+                    try:
+                        web_app = web_client.web_apps.get(actual_resource_group, actual_app_name)
+                        await log(f"✅ Verified: Azure Web App '{actual_app_name}' exists in resource group '{actual_resource_group}'", 4)
+                        await log(f"Web App state: {web_app.state}, location: {web_app.location}", 4)
+                    except ResourceNotFoundError:
+                        await log(f"❌ Azure Web App '{actual_app_name}' not found in resource group '{actual_resource_group}'", 4)
+                        
+                        # Try to find the app in other resource groups
+                        await log("Searching for the Web App in other resource groups...", 4)
+                        try:
+                            from azure.mgmt.resource import ResourceManagementClient
+                            resource_client = ResourceManagementClient(credential, subscription_id)
+                            
+                            # List all resource groups
+                            for rg in resource_client.resource_groups.list():
+                                try:
+                                    web_app = web_client.web_apps.get(rg.name, actual_app_name)
+                                    await log(f"✅ Found Web App '{actual_app_name}' in resource group '{rg.name}'", 4)
+                                    actual_resource_group = rg.name
+                                    cicd_config["RESOURCE_GROUP"] = actual_resource_group
+                                    break
+                                except ResourceNotFoundError:
+                                    continue
+                            else:
+                                await log(f"❌ Web App '{actual_app_name}' not found in any resource group", 4)
+                                await log("This might indicate a Terraform provisioning issue", 4)
+                        except Exception as search_error:
+                            await log(f"Error searching resource groups: {search_error}", 4)
+                else:
+                    await log("⚠️ No Azure subscription ID found, skipping verification", 4)
+                    
+            except Exception as verify_error:
+                await log(f"⚠️ Could not verify Azure Web App existence: {verify_error}", 4)
+                await log("Proceeding with deployment attempt...", 4)
+            
+            # Generate CD workflow with actual resource names
+            cd_yaml = await _generate_cd_with_deploy(resolved_branch, tech, cicd_config)
             await _commit_file(
                 repo, resolved_branch,
                 ".github/workflows/cd.yml",
@@ -941,14 +1132,13 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                 "chore: add CD pipeline via DevOps Agent",
                 pat,
             )
-            await log("Committed: .github/workflows/cd.yml with deploy stage", 4)
+            await log(f"✅ Committed: .github/workflows/cd.yml with app name: {actual_app_name}", 4)
 
-            app_name = str(cfg.get("APP_NAME", "devops-app"))
-            resource_group = str(cfg.get("RESOURCE_GROUP", "devops-rg"))
-            await _push_azure_secrets(repo, cfg, pat, app_name, resource_group)
-            await log("Secrets pushed: AZURE_CREDENTIALS, AZURE_WEBAPP_NAME", 4)
+            # Push secrets with actual resource names
+            await _push_azure_secrets(repo, cicd_config, pat, actual_app_name, actual_resource_group)
+            await log("✅ Secrets configured with actual resource names", 4)
         
-        await log("CD configuration complete.", 4)
+        await log("CD pipeline generation complete.", 4)
         # ── STAGE 5: Monitor Deployment ─────────────────────────────────────
         await _set_stage(5)
         
@@ -1001,7 +1191,9 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                          deployed_url=deployed_url,
                          actions_run_url=run_url or None)
         await log(f"PIPELINE COMPLETE", 0)
-        await log(f"Deployed URL : {deployed_url}", 0)
+        # Ensure URL is clean of HTML entities
+        clean_deployed_url = _decode_html_entities(deployed_url) if deployed_url else deployed_url
+        await log(f"Deployed URL : {clean_deployed_url}", 0)
         if run_url:
             await log(f"Actions Run  : {run_url}", 0)
         await log(f"🎉 Your application is now live and accessible!", 0)
@@ -1064,17 +1256,19 @@ async def _scaffold_missing_files(
 
     language: str = tech.get("language", "").lower()
     # Skip scaffolding for static frontends — they already have package.json + src/
+    # But don't skip CI/CD generation!
     is_static = (
         language in ("javascript", "typescript")
         and tech.get("framework", "") in (None, "", "react", "vue", "angular", "vite")
         and not tech.get("hasDockerfile", False)
     )
     if is_static:
-        await log("  Static frontend detected — skipping scaffold")
+        await log("  Static frontend detected — skipping scaffold (CI/CD will still be generated)")
         return
 
     templates = _SCAFFOLD_TEMPLATES.get(language, {})
     if not templates:
+        await log("  No scaffolding templates for this language")
         return
 
     for filename, content in templates.items():
@@ -1092,10 +1286,10 @@ async def _scaffold_missing_files(
 async def wait_for_azure_app(app_name, resource_group, log):
     from azure.identity import DefaultAzureCredential
     from azure.mgmt.web import WebSiteManagementClient
-    import os
+    import os as _os
 
     credential = DefaultAzureCredential()
-    subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
+    subscription_id = _os.getenv("AZURE_SUBSCRIPTION_ID")
 
     client = WebSiteManagementClient(credential, subscription_id)
 
@@ -1111,9 +1305,7 @@ async def wait_for_azure_app(app_name, resource_group, log):
     return False
 
 async def _run_terraform(cfg: dict, tech: dict, log) -> str:
-    """Run terraform using AI-generated secure configuration with Google Gemini."""
-    import os
-    from ...services.secure_pipeline_executor import SecurePipelineExecutor
+    """Run terraform using GitHub Actions for secure, scalable deployment."""
     from ...services.ai_config import AIConfig
     
     # Check if AI is enabled
@@ -1128,36 +1320,69 @@ async def _run_terraform(cfg: dict, tech: dict, log) -> str:
         return await _run_terraform_fallback(cfg, log)
     
     try:
-        # Initialize secure pipeline executor
-        executor = SecurePipelineExecutor(gemini_api_key)
+        # Use GitHub Actions-based Terraform executor
+        from ...services.github_terraform_executor import GitHubTerraformExecutor
         
-        # This will be set by the calling function
-        approval_id = cfg.get("_approval_id", 0)
-        db = cfg.get("_db")
+        executor = GitHubTerraformExecutor(gemini_api_key)
         
-        # Execute pipeline with AI-generated infrastructure
+        # Get repository and branch info from the approval record
+        approval_id = cfg.get("_approval_id", "unknown")
+        
+        # Get repo info from the database
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Approval).where(Approval.id == approval_id))
+            record = result.scalar_one_or_none()
+            if not record:
+                raise RuntimeError(f"Approval record not found: {approval_id}")
+            
+            repo = record.repo
+            branch = record.branch
+        
+        # Get GitHub token
+        import os as _os  # noqa: PLC0415
+        gh_token = _os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        if not gh_token:
+            raise RuntimeError("GITHUB_PERSONAL_ACCESS_TOKEN not configured")
+        
+        # Execute pipeline via GitHub Actions
         app_url = await executor.execute_pipeline(
             approval_id=approval_id,
             cfg=cfg,
             tech=tech,
-            db=db,
+            repo=repo,
+            branch=branch,
+            gh_token=gh_token,
             log=log
         )
         
         return app_url
         
     except Exception as exc:
+        error_msg = str(exc).lower()
+        
+        # Check for specific API key errors
+        if any(keyword in error_msg for keyword in ["api key expired", "api_key_invalid", "invalid api key", "authentication"]):
+            await log("❌ Google Gemini API key expired or invalid")
+            await log("💡 Please update your GOOGLE_GEMINI_API_KEY environment variable")
+            await log("🔗 Get a new key at: https://makersuite.google.com/app/apikey")
+        elif "timeout" in error_msg:
+            await log("⏱️ Google Gemini API timeout - service may be overloaded")
+        elif "quota" in error_msg or "rate limit" in error_msg:
+            await log("📊 Google Gemini API quota exceeded or rate limited")
+        else:
+            await log(f"🤖 AI terraform generation failed: {exc}")
+        
         if AIConfig.should_fallback_on_error():
-            await log(f"AI-powered terraform failed, falling back: {exc}")
+            await log("🔄 Falling back to local terraform execution...")
             return await _run_terraform_fallback(cfg, log)
         else:
-            await log(f"AI-powered terraform failed: {exc}")
+            await log("❌ No fallback configured - deployment failed")
             raise
 
 
 async def _run_terraform_fallback(cfg: dict, log) -> str:
     """Fallback terraform implementation with basic security."""
-    import os
+    import os as _os
     import json as _json
     import tempfile
     import asyncio
@@ -1170,25 +1395,90 @@ async def _run_terraform_fallback(cfg: dict, log) -> str:
     location = re.sub(r'[^a-zA-Z0-9]', '', str(cfg.get("LOCATION", "eastus")))[:20]
     resource_group = re.sub(r'[^a-zA-Z0-9\-]', '', str(cfg.get("RESOURCE_GROUP", "devops-rg")))[:30]
     
-    fallback_url = f"https://{app_name}.azurewebsites.net"
+    await log(f"📋 Terraform will use:")
+    await log(f"   App Name: {app_name}")
+    await log(f"   Resource Group: {resource_group}")
+    await log(f"   Location: {location}")
 
-    # Only allow terraform from trusted locations
+    # Try to find terraform binary
+    terraform_path = None
     trusted_terraform_paths = [
         "/usr/local/bin/terraform",
         "/usr/bin/terraform", 
         "./bin/terraform",
-        "C:\\terraform\\terraform.exe"
+        "C:\\terraform\\terraform.exe",
+        "/opt/homebrew/bin/terraform",  # macOS Homebrew
+        "/home/linuxbrew/.linuxbrew/bin/terraform",  # Linux Homebrew
     ]
     
-    terraform_path = None
+    # Check trusted paths first
     for path in trusted_terraform_paths:
-        if os.path.exists(path):
+        if _os.path.exists(path):
             terraform_path = path
             break
     
+    # If not found in trusted paths, try system PATH
     if not terraform_path:
-        await log("terraform binary not found in trusted locations")
-        return fallback_url
+        terraform_path = shutil.which("terraform")
+    
+    if not terraform_path:
+        await log("⚠️ Terraform binary not found. Attempting to install...")
+        
+        # Try to install terraform automatically
+        try:
+            if _os.name == 'nt':  # Windows
+                await log("Installing Terraform on Windows...")
+                # Use chocolatey if available
+                choco_path = shutil.which("choco")
+                if choco_path:
+                    proc = await asyncio.create_subprocess_exec(
+                        "choco", "install", "terraform", "-y",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await proc.communicate()
+                    terraform_path = shutil.which("terraform")
+            else:  # Linux/macOS
+                await log("Installing Terraform on Linux/macOS...")
+                # Try to download and install terraform
+                import urllib.request
+                import zipfile
+                
+                # Create local bin directory
+                local_bin = _os.path.expanduser("~/.local/bin")
+                _os.makedirs(local_bin, exist_ok=True)
+                
+                # Download terraform
+                tf_version = "1.6.0"
+                system = "linux" if _os.name == "posix" else "darwin"
+                arch = "amd64"  # Assume x64
+                
+                tf_url = f"https://releases.hashicorp.com/terraform/{tf_version}/terraform_{tf_version}_{system}_{arch}.zip"
+                tf_zip_path = f"/tmp/terraform_{tf_version}.zip"
+                
+                await log(f"Downloading Terraform {tf_version}...")
+                urllib.request.urlretrieve(tf_url, tf_zip_path)
+                
+                # Extract terraform
+                with zipfile.ZipFile(tf_zip_path, 'r') as zip_ref:
+                    zip_ref.extract('terraform', local_bin)
+                
+                # Make executable
+                terraform_path = _os.path.join(local_bin, 'terraform')
+                _os.chmod(terraform_path, 0o755)
+                
+                await log(f"✅ Terraform installed to {terraform_path}")
+                
+        except Exception as install_error:
+            await log(f"❌ Failed to install Terraform: {install_error}")
+            await log("Please install Terraform manually: https://www.terraform.io/downloads.html")
+            raise RuntimeError("Terraform installation failed")
+    
+    if not terraform_path:
+        await log("❌ Terraform installation failed")
+        raise RuntimeError("Terraform binary not found")
+    
+    await log(f"✅ Using Terraform binary: {terraform_path}")
 
     try:
         with tempfile.TemporaryDirectory(prefix="secure_terraform_") as tf_dir:
@@ -1235,6 +1525,20 @@ resource "azurerm_linux_web_app" "main" {{
   
   site_config {{
     always_on = false
+    app_command_line = "npx serve -s ."
+    
+    application_stack {{
+      node_version = "18-lts"
+    }}
+  }}
+  
+  app_settings = {{
+    WEBSITE_NODE_DEFAULT_VERSION = "18-lts"
+    WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"
+    WEBSITE_HTTPLOGGING_RETENTION_DAYS = "7"
+    WEBSITE_RUN_FROM_PACKAGE = "1"
+    SCM_DO_BUILD_DURING_DEPLOYMENT = "true"
+    ENABLE_ORYX_BUILD = "true"
   }}
 }}
 
@@ -1279,20 +1583,16 @@ output "app_url" {{
             rc, out = await _tf_secure(["init", "-no-color", "-upgrade"])
             if rc != 0:
                 await log("terraform init failed")
-                return fallback_url
+                await log(out[-1000:])  # Show last 1000 chars of output
+                raise RuntimeError("Terraform init failed")
 
             # Terraform apply
             await log("Running secure terraform apply...")
             rc, out = await _tf_secure(["apply", "-auto-approve", "-no-color"])
             if rc != 0:
                 await log("terraform apply failed")
-                return fallback_url
-            
-            await wait_for_azure_app(
-                app_name=app_name,
-                resource_group=resource_group,
-                log=log
-            )
+                await log(out[-1000:])  # Show last 1000 chars of output
+                raise RuntimeError("Terraform apply failed")
             
             # Terraform output
             rc, out = await _tf_secure(["output", "-json"])
@@ -1305,57 +1605,12 @@ output "app_url" {{
                 except _json.JSONDecodeError:
                     pass
 
-            return fallback_url
+            raise RuntimeError("Failed to get app URL from Terraform output")
 
     except Exception as exc:
         await log(f"terraform fallback failed: {type(exc).__name__}")
-        return fallback_url
-
-    env = {
-        **os.environ,
-        "TF_VAR_app_name":        app_name,
-        "TF_VAR_resource_group":  str(cfg.get("RESOURCE_GROUP", "devops-rg")),
-        "TF_VAR_location":        str(cfg.get("LOCATION", "eastus")),
-        "TF_VAR_sku":             str(cfg.get("APP_SERVICE_SKU", "B1")),
-        "TF_VAR_node_count":      str(cfg.get("NODE_COUNT", "1")),
-        "TF_VAR_vm_size":         str(cfg.get("VM_SIZE", "Standard_B1s")),
-        "TF_VAR_admin_username":  str(cfg.get("ADMIN_USER", "azureuser")),
-        "TF_INPUT":               "false",
-    }
-
-    async def _tf(args: list[str]) -> tuple[int, str]:
-        proc = await asyncio.create_subprocess_exec(
-            "terraform", *args,
-            cwd=tf_dir, env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        stdout, _ = await proc.communicate()
-        return proc.returncode, stdout.decode(errors="replace")
-
-    rc, out = await _tf(["init", "-no-color"])
-    await log(f"  terraform init: {'OK' if rc == 0 else 'FAILED'}")
-    if rc != 0:
-        await log(out[-500:])
-        return fallback_url
-
-    rc, out = await _tf(["apply", "-auto-approve", "-no-color"])
-    await log(f"  terraform apply: {'OK' if rc == 0 else 'FAILED'}")
-    if rc != 0:
-        await log(out[-500:])
-        return fallback_url
-
-    rc, out = await _tf(["output", "-json"])
-    if rc == 0:
-        try:
-            outputs = _json.loads(out)
-            url = outputs.get("app_url", {}).get("value", "")
-            if url:
-                return str(url)
-        except _json.JSONDecodeError:
-            pass
-
-    return fallback_url
+        await log(f"Error details: {str(exc)}")
+        raise
 
 def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
     deploy_target: str = str(cfg.get("DEPLOY_TARGET", "")).lower()
@@ -1387,6 +1642,14 @@ def _build_deploy_config(cfg: dict, tech: dict | None = None) -> dict | None:
     }
 
 
+async def _generate_ci_only(branch: str, tech: dict, config: dict) -> str:
+    """Generate CI workflow for build and test only (no deployment)."""
+    from ...services.pipeline_flow_manager import PipelineFlowManager
+    
+    flow_manager = PipelineFlowManager()
+    # Use the CI workflow which only builds and uploads artifacts
+    return flow_manager._generate_ci_workflow(branch, tech.get("language", "python"), tech.get("buildTool", "pip"))
+
 async def _generate_ci_with_deploy(branch: str, tech: dict, config: dict) -> str:
     """Generate complete CI workflow."""
     from ...services.pipeline_flow_manager import PipelineFlowManager
@@ -1409,12 +1672,13 @@ async def _push_azure_secrets(
 ) -> None:
     from .pipelines import _set_github_secret  # noqa: PLC0415
     import json as _json  # noqa: PLC0415
+    import os as _os  # noqa: PLC0415
 
     # Prefer credentials supplied in the committed config.py; fall back to environment variables
-    tenant_id       = str(cfg.get("TENANT_ID",       os.getenv("AZURE_TENANT_ID",       "")))
-    subscription_id = str(cfg.get("SUBSCRIPTION_ID", os.getenv("AZURE_SUBSCRIPTION_ID", "")))
-    client_id       = str(cfg.get("AZURE_CLIENT_ID",  os.getenv("AZURE_CLIENT_ID", "")))
-    client_secret   = str(cfg.get("AZURE_CLIENT_SECRET", os.getenv("AZURE_CLIENT_SECRET", "")))
+    tenant_id       = str(cfg.get("TENANT_ID",       _os.getenv("AZURE_TENANT_ID",       "")))
+    subscription_id = str(cfg.get("SUBSCRIPTION_ID", _os.getenv("AZURE_SUBSCRIPTION_ID", "")))
+    client_id       = str(cfg.get("AZURE_CLIENT_ID",  _os.getenv("AZURE_CLIENT_ID", "")))
+    client_secret   = str(cfg.get("AZURE_CLIENT_SECRET", _os.getenv("AZURE_CLIENT_SECRET", "")))
     rg              = resource_group or str(cfg.get("RESOURCE_GROUP", ""))
 
     if not all([tenant_id, subscription_id, client_id, client_secret]):
