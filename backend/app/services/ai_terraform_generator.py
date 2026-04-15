@@ -127,7 +127,7 @@ For Terraform files:
 - CRITICAL: Add app_settings block with environment variables and build settings:
   * Python: SCM_DO_BUILD_DURING_DEPLOYMENT = "true", ENABLE_ORYX_BUILD = "true"
   * Node.js: WEBSITE_NODE_DEFAULT_VERSION = "18-lts", WEBSITE_RUN_FROM_PACKAGE = "1"
-  * All: WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false", WEBSITE_HTTPLOGGING_RETENTION_DAYS = "7"
+  * All: WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false" (or "true" for production)
 
 For resource group handling:
 - Use data source to check if resource group exists first
@@ -559,20 +559,12 @@ terraform {
         
         settings = []
         
-        # Common settings for all apps
-        settings.extend([
-            'WEBSITE_NODE_DEFAULT_VERSION = "18-lts"',
-            'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"',
-            'WEBSITE_HTTPLOGGING_RETENTION_DAYS = "7"'
-        ])
-        
         # Python-specific settings
         if requirements.language == "python":
             settings.extend([
                 'SCM_DO_BUILD_DURING_DEPLOYMENT = "true"',
                 'ENABLE_ORYX_BUILD = "true"',
-                'POST_BUILD_SCRIPT_PATH = ""',
-                'PRE_BUILD_SCRIPT_PATH = ""'
+                'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"'
             ])
             
             # Framework-specific settings
@@ -596,7 +588,8 @@ terraform {
             settings.extend([
                 'WEBSITE_NODE_DEFAULT_VERSION = "18-lts"',
                 'NPM_CONFIG_PRODUCTION = "false"',
-                'WEBSITE_RUN_FROM_PACKAGE = "1"'
+                'WEBSITE_RUN_FROM_PACKAGE = "1"',
+                'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"'
             ])
             
             # Framework-specific settings
@@ -610,15 +603,22 @@ terraform {
         elif requirements.language == "java":
             settings.extend([
                 'JAVA_OPTS = "-Dserver.port=80"',
-                'WEBSITES_PORT = "80"'
+                'WEBSITES_PORT = "80"',
+                'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"'
             ])
         
-        # Environment-specific settings
-        if requirements.environment == "prod":
+        # Default settings for other languages
+        else:
             settings.extend([
-                'WEBSITE_HTTPLOGGING_RETENTION_DAYS = "30"',
-                'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "true"'
+                'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"'
             ])
+        
+        # Environment-specific settings (only add if not already set)
+        if requirements.environment == "prod":
+            # Enable storage for production
+            if 'WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"' in settings:
+                settings.remove('WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"')
+            settings.append('WEBSITES_ENABLE_APP_SERVICE_STORAGE = "true"')
         
         # Join settings with proper formatting
         return '\n    '.join(settings)
