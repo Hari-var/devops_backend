@@ -44,12 +44,14 @@ echo ""
 echo "[3/5] Waiting for app to respond..."
 MAX_ATTEMPTS=20
 ATTEMPT=0
+APP_RESPONDING=false
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL" || echo "000")
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL" 2>/dev/null || echo "000")
     
     if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "503" ]; then
         echo "✓ App is responding (HTTP $HTTP_CODE)"
+        APP_RESPONDING=true
         break
     fi
     
@@ -58,44 +60,71 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
     sleep 5
 done
 
-if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+if [ "$APP_RESPONDING" = "false" ]; then
     echo "✗ App failed to respond after $MAX_ATTEMPTS attempts"
     echo ""
-    echo "Checking logs..."
+    echo "Checking application logs..."
     az webapp log tail --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --timeout 30 || true
+    echo ""
+    echo "Download full logs with:"
+    echo "az webapp log download --name $APP_NAME --resource-group $RESOURCE_GROUP"
     exit 1
 fi
 
 # Step 4: Check API endpoints
 echo ""
 echo "[4/5] Checking API endpoints..."
+API_SUCCESS=false
 
 # Check /api/docs
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/api/docs" || echo "000")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/api/docs" 2>/dev/null || echo "000")
 if [ "$HTTP_CODE" = "200" ]; then
     echo "✓ /api/docs is accessible (HTTP $HTTP_CODE)"
+    API_SUCCESS=true
 else
-    echo "⚠ /api/docs returned HTTP $HTTP_CODE"
+    echo "✗ /api/docs returned HTTP $HTTP_CODE (expected 200)"
 fi
 
 # Check /api/openapi.json
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/api/openapi.json" || echo "000")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/api/openapi.json" 2>/dev/null || echo "000")
 if [ "$HTTP_CODE" = "200" ]; then
     echo "✓ /api/openapi.json is accessible (HTTP $HTTP_CODE)"
+    API_SUCCESS=true
 else
-    echo "⚠ /api/openapi.json returned HTTP $HTTP_CODE"
+    echo "✗ /api/openapi.json returned HTTP $HTTP_CODE (expected 200)"
 fi
 
-# Step 5: Summary
+# Step 5: Final validation
 echo ""
-echo "=========================================="
-echo "DEPLOYMENT VALIDATION COMPLETE"
-echo "=========================================="
-echo "✓ Web App: $APP_NAME"
-echo "✓ Status: Running"
-echo "✓ URL: $APP_URL"
-echo "✓ API Docs: $APP_URL/api/docs"
-echo "✓ OpenAPI: $APP_URL/api/openapi.json"
-echo "=========================================="
-
-exit 0
+if [ "$API_SUCCESS" = "true" ]; then
+    echo "=========================================="
+    echo "DEPLOYMENT VALIDATION SUCCESSFUL"
+    echo "=========================================="
+    echo "✓ Web App: $APP_NAME"
+    echo "✓ Status: Running"
+    echo "✓ URL: $APP_URL"
+    echo "✓ API Docs: $APP_URL/api/docs"
+    echo "✓ OpenAPI: $APP_URL/api/openapi.json"
+    echo "=========================================="
+    exit 0
+else
+    echo "=========================================="
+    echo "DEPLOYMENT VALIDATION FAILED"
+    echo "=========================================="
+    echo "✗ API endpoints are not accessible"
+    echo ""
+    echo "Troubleshooting steps:"
+    echo "1. Check application logs:"
+    echo "   az webapp log tail --name $APP_NAME --resource-group $RESOURCE_GROUP"
+    echo ""
+    echo "2. Check startup command:"
+    echo "   az webapp config show --name $APP_NAME --resource-group $RESOURCE_GROUP --query 'linuxFxVersion'"
+    echo ""
+    echo "3. SSH into container:"
+    echo "   az webapp ssh --name $APP_NAME --resource-group $RESOURCE_GROUP"
+    echo ""
+    echo "4. Check app settings:"
+    echo "   az webapp config appsettings list --name $APP_NAME --resource-group $RESOURCE_GROUP"
+    echo "=========================================="
+    exit 1
+fi

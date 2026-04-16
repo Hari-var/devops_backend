@@ -46,19 +46,24 @@ jobs:
     - name: Create deployment package
       run: |
         mkdir -p deploy
+        
+        # Copy application files
         cp -r backend/app deploy/
+        
+        # Copy requirements
         cp backend/requirements.txt deploy/requirements.txt
-        echo "gunicorn" >> deploy/requirements.txt
         
-        cat > deploy/startup.sh << 'EOFMARKER'
-        #!/bin/bash
-        cd /home/site/wwwroot
-        pip install --upgrade pip
-        pip install -r requirements.txt
-        gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind=0.0.0.0:8000 --timeout 600
-        EOFMARKER
+        # Ensure gunicorn is in requirements
+        if ! grep -q "gunicorn" deploy/requirements.txt; then
+          echo "gunicorn" >> deploy/requirements.txt
+        fi
         
-        chmod +x deploy/startup.sh
+        # Create a simple startup command (no script file)
+        echo "Deployment structure:"
+        ls -la deploy/
+        echo ""
+        echo "App directory:"
+        ls -la deploy/app/
 
     # ============ CD: DEPLOY TO AZURE ============
     - name: Azure Login
@@ -91,7 +96,7 @@ jobs:
         az webapp config set \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-          --startup-file "/home/site/wwwroot/startup.sh"
+          --startup-file "gunicorn -w 2 -k uvicorn.workers.UvicornWorker app.main:app --bind=0.0.0.0:8000 --timeout 600 --access-logfile - --error-logfile - --log-level info"
 
     - name: Restart Azure Web App
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -105,6 +110,20 @@ jobs:
       run: |
         chmod +x .github/workflows/validate-deployment.sh
         .github/workflows/validate-deployment.sh ${{ env.AZURE_WEBAPP_NAME }} ${{ secrets.AZURE_RESOURCE_GROUP }}
+    
+    - name: Show application logs on failure
+      if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        echo "Fetching application logs..."
+        az webapp log tail --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --timeout 60 || true
+        
+        echo ""
+        echo "Checking startup command:"
+        az webapp config show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --query 'linuxFxVersion' -o tsv
+        
+        echo ""
+        echo "Checking app settings:"
+        az webapp config appsettings list --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} -o table
 
     - name: Azure logout
       if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
