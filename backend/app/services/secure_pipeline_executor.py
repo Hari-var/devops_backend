@@ -247,7 +247,7 @@ class SecurePipelineExecutor:
                 # Execute terraform commands securely
                 await self._run_terraform_init(tf_dir, env, log)
                 await self._run_terraform_plan(tf_dir, env, log)
-                app_url = await self._run_terraform_apply(tf_dir, env, log, fallback_url)
+                app_url = await self._run_terraform_apply(tf_dir, env, log)
                 
                 return app_url
                 
@@ -354,8 +354,7 @@ class SecurePipelineExecutor:
         self, 
         tf_dir: str, 
         env: Dict[str, str], 
-        log,
-        fallback_url: str
+        log
     ) -> str:
         """Run terraform apply securely."""
         await log("Running terraform apply...")

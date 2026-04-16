@@ -82,7 +82,9 @@ class AzureResourceGroupManager:
             if log_func:
                 await log_func(f"❌ Error checking resource group '{resource_group_name}': {e}")
             logger.error(f"Error checking resource group {resource_group_name}: {e}")
-            return False\n    \n    async def list_resource_groups(self) -> list:
+            return False
+    
+    async def list_resource_groups(self) -> list:
         """List all resource groups in the subscription."""
         try:
             rgs = await asyncio.to_thread(

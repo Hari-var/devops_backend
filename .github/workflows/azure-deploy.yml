@@ -46,9 +46,19 @@ jobs:
     - name: Create deployment package
       run: |
         mkdir -p deploy
-        cp -r backend/* deploy/
-        cp requirements.txt deploy/
+        cp -r backend/app deploy/
+        cp backend/requirements.txt deploy/requirements.txt
         echo "gunicorn" >> deploy/requirements.txt
+        
+        # Create startup script
+        cat > deploy/startup.sh << 'EOF'
+#!/bin/bash
+cd /home/site/wwwroot
+pip install --upgrade pip
+pip install -r requirements.txt
+gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind=0.0.0.0:8000 --timeout 600
+EOF
+        chmod +x deploy/startup.sh
 
     # ============ CD: DEPLOY TO AZURE ============
     - name: Azure Login
@@ -81,7 +91,7 @@ jobs:
         az webapp config set \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-          --startup-file "gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8000"
+          --startup-file "/home/site/wwwroot/startup.sh"
 
     - name: Restart Azure Web App
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -94,12 +104,26 @@ jobs:
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       run: |
         echo "Waiting for application to start..."
-        sleep 45
+        sleep 60
         
         APP_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
         echo "Validating deployment at: $APP_URL"
         
-        for i in {1..12}; do
+        # First check if app is accessible at all
+        for i in {1..15}; do
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL" || echo "000")
+          
+          if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "503" ]; then
+            echo "App is responding with HTTP $HTTP_CODE"
+            break
+          fi
+          
+          echo "Attempt $i/15: App not ready (HTTP $HTTP_CODE) - Retrying in 10s..."
+          sleep 10
+        done
+        
+        # Now check API docs endpoint
+        for i in {1..10}; do
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/api/docs" || echo "000")
           
           if [ "$HTTP_CODE" = "200" ]; then
@@ -108,20 +132,23 @@ jobs:
             echo "=========================================="
             echo "API Documentation: $APP_URL/api/docs"
             echo "OpenAPI Spec: $APP_URL/api/openapi.json"
-            echo "Health Check: $APP_URL/api/health"
             echo "=========================================="
             exit 0
           fi
           
-          echo "Attempt $i/12: HTTP $HTTP_CODE - Retrying in 10s..."
+          echo "Attempt $i/10: HTTP $HTTP_CODE - Retrying in 10s..."
           sleep 10
         done
         
         echo "=========================================="
         echo "DEPLOYMENT VALIDATION FAILED"
         echo "=========================================="
+        echo "App URL: $APP_URL"
         echo "Check logs with:"
         echo "az webapp log tail --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}"
+        echo ""
+        echo "Or download logs:"
+        echo "az webapp log download --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}"
         exit 1
 
     - name: Azure logout
