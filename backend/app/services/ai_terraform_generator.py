@@ -621,7 +621,8 @@ terraform {
             settings.append('WEBSITES_ENABLE_APP_SERVICE_STORAGE = "true"')
         
         # Join settings with proper formatting
-        return '\n    '.join(settings)
+        newline_indent = '\n    '
+        return newline_indent.join(settings)
     
     def _extract_main_tf_fallback(self, response: str) -> str:
         """Extract main.tf content as fallback."""
