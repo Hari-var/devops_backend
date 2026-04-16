@@ -11,7 +11,7 @@ import json
 def check_azure_credentials():
     """Check Azure credentials from environment variables."""
     
-    print("🔍 Azure Credentials Checker")
+    print("Azure Credentials Checker")
     print("=" * 40)
     
     # Check environment variables
@@ -22,19 +22,19 @@ def check_azure_credentials():
         "AZURE_TENANT_ID": os.getenv("AZURE_TENANT_ID")
     }
     
-    print("📋 Environment Variables:")
+    print("Environment Variables:")
     for key, value in env_creds.items():
         if value:
-            print(f"✅ {key}: {value[:8]}...")
+            print(f"{key}: {value[:8]}...")
         else:
-            print(f"❌ {key}: Not set")
+            print(f"{key}: Not set")
     
     # Check if all required credentials are present
     missing_creds = [key for key, value in env_creds.items() if not value]
     
     if missing_creds:
-        print(f"\n❌ Missing credentials: {', '.join(missing_creds)}")
-        print("\n🔧 To fix this:")
+        print(f"\nMissing credentials: {', '.join(missing_creds)}")
+        print("\nTo fix this:")
         print("1. Create a service principal in Azure:")
         print("   az ad sp create-for-rbac --name 'devops-agent' --role contributor")
         print("\n2. Set environment variables:")
@@ -42,7 +42,7 @@ def check_azure_credentials():
             print(f"   export {cred}=your_value_here")
         print("\n3. Or add them to your config.py file")
     else:
-        print("\n✅ All Azure credentials are configured!")
+        print("\nAll Azure credentials are configured!")
         
         # Test creating AZURE_CREDENTIALS JSON
         try:
@@ -54,14 +54,14 @@ def check_azure_credentials():
             }
             
             azure_creds_json = json.dumps(azure_creds, indent=2)
-            print("\n📄 AZURE_CREDENTIALS JSON format:")
+            print("\nAZURE_CREDENTIALS JSON format:")
             print(azure_creds_json)
             
         except Exception as e:
-            print(f"\n❌ Error creating AZURE_CREDENTIALS JSON: {e}")
+            print(f"\nError creating AZURE_CREDENTIALS JSON: {e}")
     
     print("\n" + "=" * 40)
-    print("🔗 Useful Links:")
+    print("Useful Links:")
     print("• Azure CLI: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli")
     print("• Service Principal: https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-create-service-principal-portal")
     print("• GitHub Actions Azure: https://github.com/Azure/login")

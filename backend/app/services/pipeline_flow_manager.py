@@ -276,16 +276,16 @@ echo "Testing deployment at $APP_URL"
 # Check if app responds
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{{http_code}}" $APP_URL)
 if [ $HTTP_STATUS -eq 200 ]; then
-  echo "✅ Deployment successful - App is responding"
-  echo "🌐 Application URL: $APP_URL"
+  echo "Deployment successful - App is responding"
+  echo "Application URL: $APP_URL"
 elif [ $HTTP_STATUS -eq 404 ]; then
-  echo "⚠️ App deployed but not ready yet (404) - this is normal for new deployments"
-  echo "🌐 Application URL: $APP_URL"
-  echo "💡 The app may take a few more minutes to start up"
+  echo "App deployed but not ready yet (404) - this is normal for new deployments"
+  echo "Application URL: $APP_URL"
+  echo "The app may take a few more minutes to start up"
 else
-  echo "❌ Deployment validation failed - HTTP Status: $HTTP_STATUS"
-  echo "🌐 Application URL: $APP_URL"
-  echo "💡 Check the Azure portal for deployment logs"
+  echo "Deployment validation failed - HTTP Status: $HTTP_STATUS"
+  echo "Application URL: $APP_URL"
+  echo "Check the Azure portal for deployment logs"
   exit 1
 fi
 """
@@ -299,7 +299,7 @@ fi
     ) -> bool:
         """Validate the complete CI -> Terraform -> CD -> Access flow."""
         
-        await log_func("🔍 Validating complete DevOps flow...")
+        await log_func("Validating complete DevOps flow...")
         
         # 1. Validate CI/CD files exist
         ci_cd_valid = await self._validate_cicd_files(repo, branch, log_func)
@@ -313,10 +313,10 @@ fi
         overall_valid = ci_cd_valid and infra_valid and app_valid
         
         if overall_valid:
-            await log_func("✅ Complete DevOps flow validation successful!")
-            await log_func(f"🌐 Your application is live at: {app_url}")
+            await log_func("Complete DevOps flow validation successful!")
+            await log_func(f"Your application is live at: {app_url}")
         else:
-            await log_func("❌ DevOps flow validation failed - check individual components")
+            await log_func("DevOps flow validation failed - check individual components")
         
         return overall_valid
     
@@ -336,15 +336,15 @@ fi
                     response = await client.get(url, params={"ref": branch})
                     
                     if response.status_code == 200:
-                        await log_func(f"✅ Found {file_path}")
+                        await log_func(f"Found {file_path}")
                     else:
-                        await log_func(f"❌ Missing {file_path}")
+                        await log_func(f"Missing {file_path}")
                         return False
             
             return True
             
         except Exception as e:
-            await log_func(f"❌ CI/CD validation failed: {e}")
+            await log_func(f"CI/CD validation failed: {e}")
             return False
     
     async def _validate_infrastructure(self, app_url: str, log_func) -> bool:
@@ -352,20 +352,20 @@ fi
         try:
             import httpx
             
-            await log_func("🔍 Checking infrastructure accessibility...")
+            await log_func("Checking infrastructure accessibility...")
             
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.get(app_url)
                 
                 if response.status_code in [200, 404, 403]:  # Infrastructure exists
-                    await log_func("✅ Infrastructure is accessible")
+                    await log_func("Infrastructure is accessible")
                     return True
                 else:
-                    await log_func(f"❌ Infrastructure not accessible - Status: {response.status_code}")
+                    await log_func(f"Infrastructure not accessible - Status: {response.status_code}")
                     return False
                     
         except Exception as e:
-            await log_func(f"❌ Infrastructure validation failed: {e}")
+            await log_func(f"Infrastructure validation failed: {e}")
             return False
     
     async def _validate_application_access(self, app_url: str, log_func) -> bool:
@@ -373,7 +373,7 @@ fi
         try:
             import httpx
             
-            await log_func("🔍 Validating application deployment...")
+            await log_func("Validating application deployment...")
             
             # Wait a bit for deployment to complete
             await asyncio.sleep(10)
@@ -382,15 +382,15 @@ fi
                 response = await client.get(app_url)
                 
                 if response.status_code == 200:
-                    await log_func("✅ Application is responding successfully")
+                    await log_func("Application is responding successfully")
                     return True
                 elif response.status_code == 404:
-                    await log_func("⚠️ Application deployed but not yet ready (404)")
+                    await log_func("Application deployed but not yet ready (404)")
                     return True  # Infrastructure exists, app might still be starting
                 else:
-                    await log_func(f"⚠️ Application responding with status: {response.status_code}")
+                    await log_func(f"Application responding with status: {response.status_code}")
                     return True  # At least something is there
                     
         except Exception as e:
-            await log_func(f"❌ Application validation failed: {e}")
+            await log_func(f"Application validation failed: {e}")
             return False

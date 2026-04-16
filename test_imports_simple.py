@@ -8,7 +8,7 @@ from pathlib import Path
 def test_service_imports():
     """Test all service imports work correctly."""
     
-    print("🔍 Testing DevOps Backend Service Imports")
+    print(" Testing DevOps Backend Service Imports")
     print("=" * 50)
     
     # Add the backend directory to Python path
@@ -20,26 +20,26 @@ def test_service_imports():
     total_tests = 5
     
     # Test 1: Subscriber Manager
-    print("1️⃣ Testing subscriber_manager...")
+    print("Testing subscriber_manager...")
     try:
         from app.services.subscriber_manager import subscriber_manager
-        print("   ✅ subscriber_manager: PASS")
+        print("   subscriber_manager: PASS")
         success_count += 1
     except Exception as e:
-        print(f"   ❌ subscriber_manager: FAIL - {e}")
+        print(f"   subscriber_manager: FAIL - {e}")
     
     # Test 2: AI Config
-    print("2️⃣ Testing ai_config...")
+    print("Testing ai_config...")
     try:
         from app.services.ai_config import AIConfig
         config_test = AIConfig.is_ai_enabled()
-        print(f"   ✅ ai_config: PASS (AI enabled: {config_test})")
+        print(f"   ai_config: PASS (AI enabled: {config_test})")
         success_count += 1
     except Exception as e:
-        print(f"   ❌ ai_config: FAIL - {e}")
+        print(f"   ai_config: FAIL - {e}")
     
     # Test 3: AI Terraform Generator
-    print("3️⃣ Testing ai_terraform_generator...")
+    print("Testing ai_terraform_generator...")
     try:
         from app.services.ai_terraform_generator import AITerraformGenerator, InfrastructureRequirements
         # Test creating requirements object
@@ -47,55 +47,55 @@ def test_service_imports():
             app_type="web",
             language="python"
         )
-        print(f"   ✅ ai_terraform_generator: PASS (req: {req.app_type})")
+        print(f"   ai_terraform_generator: PASS (req: {req.app_type})")
         success_count += 1
     except Exception as e:
-        print(f"   ❌ ai_terraform_generator: FAIL - {e}")
+        print(f"   ai_terraform_generator: FAIL - {e}")
     
     # Test 4: Secure Pipeline Executor
-    print("4️⃣ Testing secure_pipeline_executor...")
+    print("Testing secure_pipeline_executor...")
     try:
         from app.services.secure_pipeline_executor import SecurePipelineExecutor
-        print("   ✅ secure_pipeline_executor: PASS")
+        print("   secure_pipeline_executor: PASS")
         success_count += 1
     except Exception as e:
-        print(f"   ❌ secure_pipeline_executor: FAIL - {e}")
+        print(f"   secure_pipeline_executor: FAIL - {e}")
     
     # Test 5: Pipeline Flow Manager
-    print("5️⃣ Testing pipeline_flow_manager...")
+    print("Testing pipeline_flow_manager...")
     try:
         from app.services.pipeline_flow_manager import PipelineFlowManager
         flow_manager = PipelineFlowManager()
         stages = flow_manager.stages
-        print(f"   ✅ pipeline_flow_manager: PASS ({len(stages)} stages)")
+        print(f"   pipeline_flow_manager: PASS ({len(stages)} stages)")
         success_count += 1
     except Exception as e:
-        print(f"   ❌ pipeline_flow_manager: FAIL - {e}")
+        print(f"   pipeline_flow_manager: FAIL - {e}")
     
     # Summary
     print("\n" + "=" * 50)
-    print(f"📊 Import Test Results: {success_count}/{total_tests}")
+    print(f"Import Test Results: {success_count}/{total_tests}")
     print(f"Success Rate: {(success_count/total_tests)*100:.1f}%")
     
     if success_count == total_tests:
-        print("🎉 All service imports working correctly!")
-        print("✅ Ready for DevOps pipeline execution")
+        print("All service imports working correctly!")
+        print("Ready for DevOps pipeline execution")
         return True
     else:
-        print("⚠️ Some imports failed. Check error messages above.")
+        print("Some imports failed. Check error messages above.")
         return False
 
 def test_yaml_dependency():
     """Test if PyYAML is available for CI/CD generation."""
-    print("\n🔧 Testing YAML Dependency...")
+    print("\nTesting YAML Dependency...")
     try:
         import yaml
         test_data = {"test": "data"}
         yaml_output = yaml.dump(test_data)
-        print("   ✅ PyYAML: PASS")
+        print("   PyYAML: PASS")
         return True
     except ImportError:
-        print("   ❌ PyYAML: FAIL - Run: pip install PyYAML")
+        print("   PyYAML: FAIL - Run: pip install PyYAML")
         return False
 
 def test_google_genai_dependency():
@@ -103,10 +103,10 @@ def test_google_genai_dependency():
     print("\n🤖 Testing Google Generative AI Dependency...")
     try:
         import google.generativeai as genai
-        print("   ✅ google-generativeai: PASS")
+        print("   google-generativeai: PASS")
         return True
     except ImportError:
-        print("   ❌ google-generativeai: FAIL - Run: pip install google-generativeai")
+        print("   google-generativeai: FAIL - Run: pip install google-generativeai")
         return False
 
 def main():
@@ -124,17 +124,17 @@ def main():
     # Final summary
     print("\n" + "=" * 60)
     print("🏁 Final Results:")
-    print(f"   Service Imports: {'✅ PASS' if services_ok else '❌ FAIL'}")
-    print(f"   YAML Dependency: {'✅ PASS' if yaml_ok else '❌ FAIL'}")
-    print(f"   Google GenAI:    {'✅ PASS' if genai_ok else '❌ FAIL'}")
+    print(f"   Service Imports: {'PASS' if services_ok else 'FAIL'}")
+    print(f"   YAML Dependency: {'PASS' if yaml_ok else 'FAIL'}")
+    print(f"   Google GenAI:    {'PASS' if genai_ok else 'FAIL'}")
     
     all_passed = services_ok and yaml_ok and genai_ok
     
     if all_passed:
-        print("\n🎉 ALL TESTS PASSED!")
+        print("\nALL TESTS PASSED!")
         print("🚀 Your DevOps backend is ready to run!")
     else:
-        print("\n⚠️ SOME TESTS FAILED")
+        print("\nSOME TESTS FAILED")
         if not yaml_ok or not genai_ok:
             print("💡 Install missing dependencies:")
             if not yaml_ok:

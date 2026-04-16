@@ -135,7 +135,7 @@ For resource group handling:
 - Use lifecycle prevent_destroy for production environments
 
 For GitHub Actions workflow:
-- Name: "🏗️ Terraform Infrastructure Deployment"
+- Name: "Terraform Infrastructure Deployment"
 - Trigger: workflow_dispatch with approval_id input
 - Use ubuntu-latest runner
 - Include these environment variables:

@@ -9,7 +9,7 @@ from pathlib import Path
 def check_directory_structure():
     """Check if the expected directory structure exists."""
     
-    print("📁 Checking Directory Structure...")
+    print("Checking Directory Structure...")
     print("-" * 40)
     
     base_dir = Path(__file__).parent
@@ -26,9 +26,9 @@ def check_directory_structure():
     for path, description in expected_structure.items():
         full_path = base_dir / path
         if full_path.exists():
-            print(f"   ✅ {description}: {full_path}")
+            print(f"   {description}: {full_path}")
         else:
-            print(f"   ❌ {description}: MISSING - {full_path}")
+            print(f"   {description}: MISSING - {full_path}")
             all_exist = False
     
     return all_exist
@@ -36,7 +36,7 @@ def check_directory_structure():
 def check_service_files():
     """Check if all service files exist."""
     
-    print("\n📄 Checking Service Files...")
+    print("\nChecking Service Files...")
     print("-" * 40)
     
     base_dir = Path(__file__).parent
@@ -55,9 +55,9 @@ def check_service_files():
     for filename in expected_files:
         file_path = services_dir / filename
         if file_path.exists():
-            print(f"   ✅ {filename}: EXISTS")
+            print(f"   {filename}: EXISTS")
         else:
-            print(f"   ❌ {filename}: MISSING")
+            print(f"   {filename}: MISSING")
             all_exist = False
     
     return all_exist
@@ -65,7 +65,7 @@ def check_service_files():
 def check_init_files():
     """Check if __init__.py files exist where needed."""
     
-    print("\n🐍 Checking __init__.py Files...")
+    print("\nChecking __init__.py Files...")
     print("-" * 40)
     
     base_dir = Path(__file__).parent
@@ -81,9 +81,9 @@ def check_init_files():
     for init_path in init_locations:
         full_path = base_dir / init_path
         if full_path.exists():
-            print(f"   ✅ {init_path}: EXISTS")
+            print(f"   {init_path}: EXISTS")
         else:
-            print(f"   ❌ {init_path}: MISSING")
+            print(f"   {init_path}: MISSING")
             missing_inits.append(full_path)
     
     return missing_inits
@@ -94,7 +94,7 @@ def create_missing_init_files(missing_inits):
     if not missing_inits:
         return True
     
-    print(f"\n🔧 Creating {len(missing_inits)} Missing __init__.py Files...")
+    print(f"\nCreating {len(missing_inits)} Missing __init__.py Files...")
     print("-" * 50)
     
     for init_path in missing_inits:
@@ -104,9 +104,9 @@ def create_missing_init_files(missing_inits):
             
             # Create empty __init__.py file
             init_path.write_text("# Auto-generated __init__.py file\n")
-            print(f"   ✅ Created: {init_path}")
+            print(f"   Created: {init_path}")
         except Exception as e:
-            print(f"   ❌ Failed to create {init_path}: {e}")
+            print(f"   Failed to create {init_path}: {e}")
             return False
     
     return True
@@ -114,7 +114,7 @@ def create_missing_init_files(missing_inits):
 def test_imports_after_fix():
     """Test imports after applying fixes."""
     
-    print("\n🧪 Testing Imports After Fix...")
+    print("\nTesting Imports After Fix...")
     print("-" * 40)
     
     # Add backend to path
@@ -135,17 +135,17 @@ def test_imports_after_fix():
         try:
             module = __import__(module_name, fromlist=[class_name])
             getattr(module, class_name)
-            print(f"   ✅ {module_name}.{class_name}: PASS")
+            print(f"   {module_name}.{class_name}: PASS")
             success_count += 1
         except Exception as e:
-            print(f"   ❌ {module_name}.{class_name}: FAIL - {e}")
+            print(f"   {module_name}.{class_name}: FAIL - {e}")
     
     return success_count == len(test_imports)
 
 def main():
     """Main diagnostic and fix function."""
     
-    print("🔧 DevOps Backend Import Diagnostic & Fix")
+    print("DevOps Backend Import Diagnostic & Fix")
     print("=" * 60)
     
     # Step 1: Check directory structure
@@ -162,7 +162,7 @@ def main():
         init_fix_ok = create_missing_init_files(missing_inits)
     else:
         init_fix_ok = True
-        print("\n✅ All __init__.py files already exist")
+        print("\nAll __init__.py files already exist")
     
     # Step 5: Test imports after fixes
     if structure_ok and files_ok and init_fix_ok:
@@ -172,18 +172,18 @@ def main():
     
     # Final summary
     print("\n" + "=" * 60)
-    print("📊 Diagnostic Results:")
-    print(f"   Directory Structure: {'✅ OK' if structure_ok else '❌ ISSUES'}")
-    print(f"   Service Files:       {'✅ OK' if files_ok else '❌ MISSING'}")
-    print(f"   Init Files:          {'✅ OK' if init_fix_ok else '❌ ISSUES'}")
-    print(f"   Import Tests:        {'✅ OK' if imports_ok else '❌ FAILED'}")
+    print("Diagnostic Results:")
+    print(f"   Directory Structure: {'OK' if structure_ok else 'ISSUES'}")
+    print(f"   Service Files:       {'OK' if files_ok else 'MISSING'}")
+    print(f"   Init Files:          {'OK' if init_fix_ok else 'ISSUES'}")
+    print(f"   Import Tests:        {'OK' if imports_ok else 'FAILED'}")
     
     if structure_ok and files_ok and init_fix_ok and imports_ok:
-        print("\n🎉 ALL ISSUES RESOLVED!")
-        print("✅ Your DevOps backend imports should now work correctly")
+        print("\nALL ISSUES RESOLVED!")
+        print("Your DevOps backend imports should now work correctly")
         return True
     else:
-        print("\n⚠️ SOME ISSUES REMAIN")
+        print("\nSOME ISSUES REMAIN")
         if not structure_ok:
             print("   • Check that all directories exist")
         if not files_ok:

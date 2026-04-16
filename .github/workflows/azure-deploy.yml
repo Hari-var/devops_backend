@@ -1,0 +1,129 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: DevOpsAgent-Backend
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # ============ CI: BUILD & TEST ============
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install gunicorn flake8 pytest pytest-asyncio
+
+    - name: Lint with flake8
+      run: |
+        flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 backend/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      continue-on-error: true
+
+    - name: Run tests
+      run: |
+        pytest --verbose
+      continue-on-error: true
+
+    - name: Create deployment package
+      run: |
+        mkdir -p deploy
+        cp -r backend/* deploy/
+        cp requirements.txt deploy/
+        echo "gunicorn" >> deploy/requirements.txt
+
+    # ============ CD: DEPLOY TO AZURE ============
+    - name: Azure Login
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: azure/login@v2
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Deploy to Azure Web App
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        package: ./deploy
+
+    - name: Configure Azure Web App settings
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        az webapp config appsettings set \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+          --settings \
+            SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+            ENABLE_ORYX_BUILD=true \
+            WEBSITES_ENABLE_APP_SERVICE_STORAGE=false
+
+    - name: Set startup command
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        az webapp config set \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+          --startup-file "gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8000"
+
+    - name: Restart Azure Web App
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        az webapp restart \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}
+
+    - name: Validate deployment
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        echo "Waiting for application to start..."
+        sleep 45
+        
+        APP_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+        echo "Validating deployment at: $APP_URL"
+        
+        for i in {1..12}; do
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/api/docs" || echo "000")
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "=========================================="
+            echo "DEPLOYMENT SUCCESSFUL!"
+            echo "=========================================="
+            echo "API Documentation: $APP_URL/api/docs"
+            echo "OpenAPI Spec: $APP_URL/api/openapi.json"
+            echo "Health Check: $APP_URL/api/health"
+            echo "=========================================="
+            exit 0
+          fi
+          
+          echo "Attempt $i/12: HTTP $HTTP_CODE - Retrying in 10s..."
+          sleep 10
+        done
+        
+        echo "=========================================="
+        echo "DEPLOYMENT VALIDATION FAILED"
+        echo "=========================================="
+        echo "Check logs with:"
+        echo "az webapp log tail --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}"
+        exit 1
+
+    - name: Azure logout
+      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: az logout

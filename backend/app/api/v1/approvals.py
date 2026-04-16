@@ -738,7 +738,7 @@ async def _run_pipeline(approval_id: str, gh_token: str) -> None:
         await _push_log(approval_id, "• Google Gemini API timeout or rate limiting", 0)
         await _push_log(approval_id, "• Azure resource provisioning delays", 0)
         await _push_log(approval_id, "• Network connectivity issues", 0)
-        await _push_log(approval_id, "💡 Try again or check your API keys and network connection", 0)
+        await _push_log(approval_id, "Try again or check your API keys and network connection", 0)
         
         # Broadcast failure to all subscribers
         subscriber_manager.broadcast_message(approval_id, "FAILED")
@@ -890,7 +890,7 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                 "chore: add CI pipeline via DevOps Agent",
                 pat,
             )
-            await log("✅ Committed: .github/workflows/ci.yml (build only)", 2)
+            await log("Committed: .github/workflows/ci.yml (build only)", 2)
             
             # Prepare repository (scaffolding and gitignore)
             await log("Preparing repository structure...", 2)
@@ -944,10 +944,10 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
             await log(f"Location       : {cfg.get('LOCATION', 'eastus')}", 3)
             
             if strategy == DeploymentStrategy.GITHUB_ACTIONS:
-                await log("🚀 Using GitHub Actions for secure Terraform deployment", 3)
-                await log("✅ Benefits: Secure credentials, audit trail, team collaboration", 3)
+                await log("Using GitHub Actions for secure Terraform deployment", 3)
+                await log("Benefits: Secure credentials, audit trail, team collaboration", 3)
             else:
-                await log(f"⚠️ Using {strategy.value} deployment strategy", 3)
+                await log(f"Using {strategy.value} deployment strategy", 3)
             
             # Ensure resource group exists before Terraform (for local execution)
             if strategy == DeploymentStrategy.LOCAL_EXECUTION:
@@ -962,13 +962,13 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                     # Validate and suggest better name if needed
                     is_valid, validation_msg = rg_manager.validate_resource_group_name(resource_group)
                     if not is_valid:
-                        await log(f"⚠️ Invalid resource group name: {validation_msg}", 3)
+                        await log(f"Invalid resource group name: {validation_msg}", 3)
                         # Try to fix the resource group name while preserving the original intent
                         suggested_name = rg_manager.suggest_resource_group_name(resource_group, cfg.get("ENVIRONMENT", "dev"))
                         await log(f"📝 Using corrected name: {suggested_name} (based on original: {resource_group})", 3)
                         resource_group = suggested_name
                     else:
-                        await log(f"✅ Resource group name '{resource_group}' is valid", 3)
+                        await log(f"Resource group name '{resource_group}' is valid", 3)
                     
                     # Ensure resource group exists
                     rg_created = await rg_manager.ensure_resource_group_exists(
@@ -984,14 +984,14 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                     )
                     
                     if not rg_created:
-                        await log("❌ Failed to ensure resource group exists", 3)
+                        await log("Failed to ensure resource group exists", 3)
                         raise RuntimeError(f"Could not create or access resource group: {resource_group}")
                     
                     # Update config with validated resource group name
                     cfg["RESOURCE_GROUP"] = resource_group
                     
                 except Exception as rg_error:
-                    await log(f"⚠️ Resource group management failed: {rg_error}", 3)
+                    await log(f"Resource group management failed: {rg_error}", 3)
                     await log("Continuing with Terraform (it will create the RG)", 3)
             
             # Pass additional context for terraform execution
@@ -1018,8 +1018,8 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
             await log(f"Provisioned URL: {deployed_url}", 3)
             
             if strategy == DeploymentStrategy.GITHUB_ACTIONS:
-                await log("✅ GitHub Actions deployment completed successfully", 3)
-                await log("📊 Check GitHub Actions tab for detailed logs and audit trail", 3)
+                await log("GitHub Actions deployment completed successfully", 3)
+                await log("Check GitHub Actions tab for detailed logs and audit trail", 3)
             else:
                 await log("Infrastructure provisioning complete.", 3)
         
@@ -1061,7 +1061,7 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                             await log(f"Potential resource group based on app name: {potential_rg}", 4)
                             # For safety, we'll still use the configured resource group but log the potential mismatch
                             if potential_rg != actual_resource_group:
-                                await log(f"⚠️ Resource group mismatch: config={actual_resource_group}, potential={potential_rg}", 4)
+                                await log(f"Resource group mismatch: config={actual_resource_group}, potential={potential_rg}", 4)
                 else:
                     await log(f"Could not extract app name from URL: {deployed_url}", 4)
             
@@ -1090,10 +1090,10 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                     
                     try:
                         web_app = web_client.web_apps.get(actual_resource_group, actual_app_name)
-                        await log(f"✅ Verified: Azure Web App '{actual_app_name}' exists in resource group '{actual_resource_group}'", 4)
+                        await log(f"Verified: Azure Web App '{actual_app_name}' exists in resource group '{actual_resource_group}'", 4)
                         await log(f"Web App state: {web_app.state}, location: {web_app.location}", 4)
                     except ResourceNotFoundError:
-                        await log(f"❌ Azure Web App '{actual_app_name}' not found in resource group '{actual_resource_group}'", 4)
+                        await log(f"Azure Web App '{actual_app_name}' not found in resource group '{actual_resource_group}'", 4)
                         
                         # Try to find the app in other resource groups
                         await log("Searching for the Web App in other resource groups...", 4)
@@ -1105,22 +1105,22 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                             for rg in resource_client.resource_groups.list():
                                 try:
                                     web_app = web_client.web_apps.get(rg.name, actual_app_name)
-                                    await log(f"✅ Found Web App '{actual_app_name}' in resource group '{rg.name}'", 4)
+                                    await log(f"Found Web App '{actual_app_name}' in resource group '{rg.name}'", 4)
                                     actual_resource_group = rg.name
                                     cicd_config["RESOURCE_GROUP"] = actual_resource_group
                                     break
                                 except ResourceNotFoundError:
                                     continue
                             else:
-                                await log(f"❌ Web App '{actual_app_name}' not found in any resource group", 4)
+                                await log(f"Web App '{actual_app_name}' not found in any resource group", 4)
                                 await log("This might indicate a Terraform provisioning issue", 4)
                         except Exception as search_error:
                             await log(f"Error searching resource groups: {search_error}", 4)
                 else:
-                    await log("⚠️ No Azure subscription ID found, skipping verification", 4)
+                    await log("No Azure subscription ID found, skipping verification", 4)
                     
             except Exception as verify_error:
-                await log(f"⚠️ Could not verify Azure Web App existence: {verify_error}", 4)
+                await log(f"Could not verify Azure Web App existence: {verify_error}", 4)
                 await log("Proceeding with deployment attempt...", 4)
             
             # Generate CD workflow with actual resource names
@@ -1132,11 +1132,11 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
                 "chore: add CD pipeline via DevOps Agent",
                 pat,
             )
-            await log(f"✅ Committed: .github/workflows/cd.yml with app name: {actual_app_name}", 4)
+            await log(f"Committed: .github/workflows/cd.yml with app name: {actual_app_name}", 4)
 
             # Push secrets with actual resource names
             await _push_azure_secrets(repo, cicd_config, pat, actual_app_name, actual_resource_group)
-            await log("✅ Secrets configured with actual resource names", 4)
+            await log("Secrets configured with actual resource names", 4)
         
         await log("CD pipeline generation complete.", 4)
         # ── STAGE 5: Monitor Deployment ─────────────────────────────────────
@@ -1182,9 +1182,9 @@ async def _run_pipeline_impl(approval_id: str, gh_token: str) -> None:
         )
         
         if flow_valid:
-            await log("✅ End-to-end validation successful!", 6)
+            await log("End-to-end validation successful!", 6)
         else:
-            await log("⚠️ Some validation checks failed, but deployment completed", 6)
+            await log("Some validation checks failed, but deployment completed", 6)
 
         # ── DONE ─────────────────────────────────────────────────────────────
         await _set_stage(7, status="done",
@@ -1362,21 +1362,21 @@ async def _run_terraform(cfg: dict, tech: dict, log) -> str:
         
         # Check for specific API key errors
         if any(keyword in error_msg for keyword in ["api key expired", "api_key_invalid", "invalid api key", "authentication"]):
-            await log("❌ Google Gemini API key expired or invalid")
-            await log("💡 Please update your GOOGLE_GEMINI_API_KEY environment variable")
-            await log("🔗 Get a new key at: https://makersuite.google.com/app/apikey")
+            await log("Google Gemini API key expired or invalid")
+            await log("Please update your GOOGLE_GEMINI_API_KEY environment variable")
+            await log("Get a new key at: https://makersuite.google.com/app/apikey")
         elif "timeout" in error_msg:
-            await log("⏱️ Google Gemini API timeout - service may be overloaded")
+            await log("Google Gemini API timeout - service may be overloaded")
         elif "quota" in error_msg or "rate limit" in error_msg:
-            await log("📊 Google Gemini API quota exceeded or rate limited")
+            await log("Google Gemini API quota exceeded or rate limited")
         else:
-            await log(f"🤖 AI terraform generation failed: {exc}")
+            await log(f"AI terraform generation failed: {exc}")
         
         if AIConfig.should_fallback_on_error():
-            await log("🔄 Falling back to local terraform execution...")
+            await log("Falling back to local terraform execution...")
             return await _run_terraform_fallback(cfg, log)
         else:
-            await log("❌ No fallback configured - deployment failed")
+            await log("No fallback configured - deployment failed")
             raise
 
 
@@ -1422,7 +1422,7 @@ async def _run_terraform_fallback(cfg: dict, log) -> str:
         terraform_path = shutil.which("terraform")
     
     if not terraform_path:
-        await log("⚠️ Terraform binary not found. Attempting to install...")
+        await log("Terraform binary not found. Attempting to install...")
         
         # Try to install terraform automatically
         try:
@@ -1467,18 +1467,18 @@ async def _run_terraform_fallback(cfg: dict, log) -> str:
                 terraform_path = _os.path.join(local_bin, 'terraform')
                 _os.chmod(terraform_path, 0o755)
                 
-                await log(f"✅ Terraform installed to {terraform_path}")
+                await log(f"Terraform installed to {terraform_path}")
                 
         except Exception as install_error:
-            await log(f"❌ Failed to install Terraform: {install_error}")
+            await log(f"Failed to install Terraform: {install_error}")
             await log("Please install Terraform manually: https://www.terraform.io/downloads.html")
             raise RuntimeError("Terraform installation failed")
     
     if not terraform_path:
-        await log("❌ Terraform installation failed")
+        await log("Terraform installation failed")
         raise RuntimeError("Terraform binary not found")
     
-    await log(f"✅ Using Terraform binary: {terraform_path}")
+    await log(f"Using Terraform binary: {terraform_path}")
 
     try:
         with tempfile.TemporaryDirectory(prefix="secure_terraform_") as tf_dir:
