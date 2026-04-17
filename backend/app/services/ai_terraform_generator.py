@@ -394,10 +394,7 @@ resource "azurerm_linux_web_app" "main" {{
     
     {startup_command}
     
-    application_stack {{
-      {"python_version = \"3.11\"" if requirements.language == "python" else ""}
-      {"node_version = \"18-lts\"" if requirements.language in ["javascript", "typescript"] else ""}
-      {"java_version = \"17\"" if requirements.language == "java" else ""}
+    application_stack {{{self._get_application_stack(requirements)}
     }}
   }}
   
@@ -646,6 +643,18 @@ terraform {
         # Join settings with proper formatting
         newline_indent = '\n    '
         return newline_indent.join(settings)
+    
+    def _get_application_stack(self, requirements: InfrastructureRequirements) -> str:
+        """Get application stack configuration based on language."""
+        
+        if requirements.language == "python":
+            return '\n      python_version = "3.11"'
+        elif requirements.language in ["javascript", "typescript"]:
+            return '\n      node_version = "18-lts"'
+        elif requirements.language == "java":
+            return '\n      java_version = "17"'
+        else:
+            return ''
     
     def _extract_main_tf_fallback(self, response: str) -> str:
         """Extract main.tf content as fallback."""
