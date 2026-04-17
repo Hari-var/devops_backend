@@ -128,6 +128,16 @@ For Terraform files:
   * Python: SCM_DO_BUILD_DURING_DEPLOYMENT = "true", ENABLE_ORYX_BUILD = "true"
   * Node.js: WEBSITE_NODE_DEFAULT_VERSION = "18-lts", WEBSITE_RUN_FROM_PACKAGE = "1"
   * All: WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false" (or "true" for production)
+- CRITICAL: DO NOT set these reserved Azure settings in app_settings (they are managed by Azure):
+  * WEBSITE_HTTPLOGGING_RETENTION_DAYS
+  * WEBSITE_HTTPLOGGING_CONTAINER_URL
+  * DIAGNOSTICS_AZUREBLOBCONTAINERSASURL
+  * DIAGNOSTICS_AZUREBLOBRETENTIONINDAYS
+  * APPINSIGHTS_INSTRUMENTATIONKEY
+- CRITICAL: Use logs configuration block for HTTP logging and application logs:
+  * Add logs block with http_logs and application_logs sections
+  * Set retention_in_days inside http_logs.file_system block
+  * Set file_system_level inside application_logs block
 
 For resource group handling:
 - Use data source to check if resource group exists first
@@ -388,6 +398,19 @@ resource "azurerm_linux_web_app" "main" {{
       {"python_version = \"3.11\"" if requirements.language == "python" else ""}
       {"node_version = \"18-lts\"" if requirements.language in ["javascript", "typescript"] else ""}
       {"java_version = \"17\"" if requirements.language == "java" else ""}
+    }}
+  }}
+  
+  logs {{
+    http_logs {{
+      file_system {{
+        retention_in_days = {7 if requirements.environment == 'dev' else 30}
+        retention_in_mb   = 35
+      }}
+    }}
+    
+    application_logs {{
+      file_system_level = "Information"
     }}
   }}
   
